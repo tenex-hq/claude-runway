@@ -10,8 +10,8 @@ import (
 )
 
 // A minimal MCP server over stdio, stdlib only. Kept even though AXI argues the CLI is
-// the cheaper integration, because a host that already speaks MCP (autodev's engine, for
-// one) should not have to shell out, and the whole surface is one read-only tool.
+// the cheaper integration, because a host application that already speaks MCP should not
+// have to shell out, and the whole surface here is one read-only tool.
 //
 // stdio framing is newline-delimited JSON-RPC 2.0. One hard rule: stdout carries protocol
 // traffic and nothing else, so diagnostics go to stderr.
@@ -23,8 +23,8 @@ const (
 
 var supportedProtocols = map[string]bool{"2024-11-05": true, "2025-03-26": true, "2025-06-18": true}
 
-// Wording carried over from autodev's in-process tool: it is what makes a model treat the
-// number as a budget to pace against rather than a statistic to mention.
+// The wording is deliberate and load-bearing: it is what makes a model treat the number as
+// a budget to pace against rather than a statistic to mention.
 const checkUsageDescription = "Return how much of the user's Claude subscription allowance is LEFT for the session (5h) and weekly windows: percent left (100 = untouched, 0 = exhausted), time until each window resets, and a pace verdict. Pace compares budget left against time left in the window: positive headroom means the remaining budget comfortably covers the time to reset (you are ahead and safe), negative means you are burning faster than the clock and may run dry early. The top-level verdict (safe, caution, stop) already combines the windows for you. Use it to gate budget-limited work."
 
 type rpcRequest struct {

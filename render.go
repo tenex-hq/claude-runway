@@ -269,8 +269,8 @@ func describeFailure(r reading) failureText {
 }
 
 // --- JSON ---------------------------------------------------------------------------
-// For hosts that embed this rather than read it: autodev, scripts, anything that wants
-// to keep its own state on top.
+// For callers that embed this rather than read it: scripts, or a host application that
+// wants to keep its own state on top.
 
 type jsonWindow struct {
 	Window      string  `json:"window"`

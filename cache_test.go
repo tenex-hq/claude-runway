@@ -101,7 +101,7 @@ func TestCacheRejectsAncientAndFutureReadings(t *testing.T) {
 }
 
 // The degradation path: a failed live read serves the last reading, flagged, rather than
-// nothing. This mirrors what autodev does in-process, and the flag is what keeps it honest.
+// nothing. The flag is the whole point, and is what keeps serving stale data honest.
 func TestStaleFallbackIsLabelledNotSilent(t *testing.T) {
 	isolateCache(t)
 	past := time.Now().Add(-10 * time.Minute)
