@@ -114,12 +114,28 @@ public, and re-tagging the same version is the one thing to avoid.
 
 ## Recovery
 
-- **Homebrew step failed, release exists.** Do not delete the tag. Fix the cause (almost
-  always the missing or expired token), then re-run the failed job:
-  `gh run rerun <id> --repo tenex-hq/claude-runway --failed`. GoReleaser's `release.mode`
-  defaults to `keep-existing` and it supports `replace_existing_artifacts`, so a re-run
-  against an existing release is the intended path. This has not been exercised here, so read
-  the log rather than trusting it.
+- **Homebrew step failed, release exists.** Do not delete the tag. Fix the cause, then re-run
+  the failed job: `gh run rerun <id> --repo tenex-hq/claude-runway --failed`.
+
+  A re-run only works because **`release.replace_existing_artifacts: true`** is set in
+  `.goreleaser.yaml`. Uploads are not idempotent by default: run 1 uploads the assets, and the
+  re-run then collides with them, `422 Validation Failed ... already_exists`, failing the
+  whole release even though every artifact is already present and correct. This happened on
+  v0.2.0. If that option is ever removed, every re-run breaks.
+
+  Note the config comes from the **tagged commit**, not from `main`. Adding that option to
+  `main` does not change the behaviour of a re-run of an existing tag. To recover a tag cut
+  before the fix: delete the release assets
+  (`gh release delete-asset vX.Y.Z <name> --repo ...`) and then re-run, so the uploads have
+  nothing to collide with.
+
+- **Don't trust `gh secret list --repo` to prove a secret is missing.** It does not show
+  **organisation** secrets, and listing those needs org admin (`403` otherwise). An empty repo
+  list is not evidence. Check the workflow log for what the Homebrew step actually did.
+
+- **A fine-grained PAT against an org needs approving by an org owner** after it is created.
+  Until it is approved it exists and looks correct but is not authorised, and the Homebrew
+  step fails on it. This was the original v0.2.0 failure.
 - **Build failed before publishing.** Nothing is public. Delete the local and remote tag
   (`git tag -d`, `git push origin :refs/tags/vX.Y.Z`), fix, start over.
 - **Wrong version reported by the shipped binary.** `binVersion` was a const, or `flake.nix`

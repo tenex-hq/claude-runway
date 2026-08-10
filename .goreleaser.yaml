@@ -90,6 +90,14 @@ homebrew_casks:
           end
 
 release:
+  # Makes asset uploads idempotent, which they are not by default.
+  #
+  # Observed on the v0.2.0 attempt: uploads took 2m3s, failed client-side, but had
+  # already landed server-side. GoReleaser retried, every retry came back
+  # 422 already_exists, and the release was marked failed with all seven artifacts
+  # present and correct. Without this, any slow upload or any re-run of the job
+  # fails the whole release for a reason that has nothing to do with the build.
+  replace_existing_artifacts: true
   footer: |
     ## Install
 
