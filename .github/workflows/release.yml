@@ -14,18 +14,21 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # GoReleaser needs the full history and tags to build a changelog and
           # work out the version. A shallow clone makes it fail.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
-          cache: true
+          # Off deliberately, not as a workaround. The module cache is keyed on
+          # go.sum, and a project with zero dependencies never has one, so caching
+          # can only ever warn that it found nothing to key on.
+          cache: false
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean
