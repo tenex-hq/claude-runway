@@ -33,7 +33,17 @@ Usage:
   claude-runway [flags]        Read the meters: verdict, then one row per window
   claude-runway doctor         Where credentials were found (never prints the token)
   claude-runway mcp            Serve MCP over stdio; one tool, check_usage
+  claude-runway install-skills Install the Claude Code skill (--user or --project)
   claude-runway version        Print the version
+
+install-skills flags:
+  --user                      Install to ~/.claude/skills (every project)
+  --project                   Install to ./.claude/skills (this project only)
+  --dry-run                   Report what would change, write nothing
+  --force                     Overwrite a file that exists with different content
+
+  Additive: it only writes under <scope>/.claude/skills/claude-runway/ and never
+  touches settings.json or any existing hook configuration.
 
 Flags:
   --brief                     Drop the preamble and help lines. Use this in loops.
@@ -79,6 +89,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return serveMCP(stdin, stdout, stderr)
 		case "doctor":
 			return runDoctor(stdout)
+		case "install-skills":
+			return runInstallSkills(args[1:], stdout)
 		case "version":
 			fmt.Fprintf(stdout, "%s\n", binVersion)
 			return exitOK
@@ -86,7 +98,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, helpText)
 			return exitOK
 		default:
-			fmt.Fprintf(stdout, "error: unknown command %q\nhelp: valid commands are doctor, mcp, version, help. Run `claude-runway --help`.\n", args[0])
+			fmt.Fprintf(stdout, "error: unknown command %q\nhelp: valid commands are doctor, mcp, install-skills, version, help. Run `claude-runway --help`.\n", args[0])
 			return exitUsage
 		}
 	}

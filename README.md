@@ -91,9 +91,45 @@ have to shell out.
 | `claude-runway --fields=a,b,c` | Pick columns |
 | `claude-runway doctor` | Where credentials were found. Never prints the token |
 | `claude-runway mcp` | Serve MCP over stdio. One tool: `check_usage` |
+| `claude-runway install-skills` | Install the Claude Code skill. `--user` or `--project` |
 
 Fields: `window`, `left_pct`, `resets_in`, `resets_at`, `pace`, `headroom_pts`, `severity`,
 `utilization_pct`. The default five are the ones a decision actually needs.
+
+## Teaching an agent to use it
+
+```bash
+claude-runway install-skills --user      # ~/.claude/skills, every project
+claude-runway install-skills --project   # ./.claude/skills, this project only
+claude-runway install-skills --user --dry-run
+```
+
+This installs a skill that explains how to read the output and what to do about it: that
+percentages are remaining, what each verdict means, that a 429 is the meter refusing to be
+read rather than an exhausted budget, and how to gate a loop without polling. The skill is
+embedded in the binary, so installing needs no network and no second artifact to keep in sync.
+
+**Deliberately a skill, not a `SessionStart` hook.** A hook would inject the budget into every
+session before the first prompt, which sounds better than it is: it means merging into a
+`settings.json` that probably already has hooks in it, and it pays context cost every session
+whether or not the budget turns out to be relevant. A skill is purely additive, writes only
+under `<scope>/.claude/skills/claude-runway/`, touches no existing configuration, and loads
+only when it is needed.
+
+Safety properties, both covered by tests: re-running is a no-op rather than a rewrite, and a
+file you have edited yourself is never silently overwritten. That case reports `conflict`,
+exits 1, and tells you to pass `--force` if losing the edit is what you want. A missing scope
+is a usage error rather than a guess between your home directory and the project.
+
+### Why it cannot be passive
+
+Worth recording, because it is the obvious next idea: a hook or skill **cannot** read live
+window utilisation the way an application driving the Agent SDK can. The SDK streams
+`rate_limit_event` messages carrying utilisation directly, but hook input contains no usage
+fields at all, and the session transcript records only `message.usage` token counts, with no
+utilisation, quota or window data. So the only two ways to learn the real numbers are calling
+the endpoint, which is what this does, or estimating spend from token counts, which is a
+different question. There is no free lunch here.
 
 ## The verdict
 
