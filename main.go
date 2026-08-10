@@ -12,7 +12,13 @@ import (
 // A var, not a const, so a release build can stamp the real version in with
 // `-ldflags "-X main.binVersion=..."`. As a const it would silently report this
 // literal forever, no matter what was tagged.
-var binVersion = "0.2.0-dev"
+//
+// Left as the sentinel rather than a plausible-looking number: an un-stamped build falls back
+// to the module version and VCS revision instead (see version.go), which cannot go stale.
+var binVersion = devVersion
+
+// Resolved once. Reported by `version`, `--version`, and MCP serverInfo, so all three agree.
+var reportedVersion = resolveVersion()
 
 // One sentence, printed in the home view so an agent that runs the bare command learns
 // what this is without a second call (AXI principle 8).
@@ -92,7 +98,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		case "install-skills":
 			return runInstallSkills(args[1:], stdout)
 		case "version":
-			fmt.Fprintf(stdout, "%s\n", binVersion)
+			fmt.Fprintf(stdout, "%s\n", reportedVersion)
 			return exitOK
 		case "help":
 			fmt.Fprintln(stdout, helpText)
@@ -111,7 +117,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, helpText)
 			return exitOK
 		case a == "--version":
-			fmt.Fprintf(stdout, "%s\n", binVersion)
+			fmt.Fprintf(stdout, "%s\n", reportedVersion)
 			return exitOK
 		case a == "--brief":
 			opts.brief = true

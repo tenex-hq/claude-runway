@@ -111,7 +111,7 @@ func handleRPC(line string, reply func(json.RawMessage, any), fail func(json.Raw
 		reply(req.ID, map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": serverName, "version": binVersion},
+			"serverInfo":      map[string]any{"name": serverName, "version": reportedVersion},
 		})
 	case "ping":
 		if isRequest {

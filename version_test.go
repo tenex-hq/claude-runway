@@ -1,0 +1,80 @@
+package main
+
+import (
+	"os/exec"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// resolveVersion reads real build info, so its branches cannot all be driven from a unit test.
+// What is testable, and what actually regressed, is the composition: a doubled dirty marker
+// ("0.3.0+dirty+abc1234.dirty") shipped once because Go appends its own "+dirty" to
+// Main.Version and this code appended another.
+func TestReportedVersionHasNoDoubledMarkers(t *testing.T) {
+	v := reportedVersion
+	if v == "" {
+		t.Fatal("version is empty")
+	}
+	if strings.Count(v, "+dirty") > 1 || strings.Count(v, "dirty") > 1 {
+		t.Errorf("version %q repeats the dirty marker", v)
+	}
+	if strings.Count(v, "+") > 1 {
+		t.Errorf("version %q has more than one build-metadata separator", v)
+	}
+	if strings.HasPrefix(v, "v") {
+		t.Errorf("version %q keeps the tag's leading v; it should be normalised away to match the release stamp", v)
+	}
+	// Either a plain version, or a version plus one metadata segment.
+	if !regexp.MustCompile(`^[0-9a-zA-Z.\-]+(\+[0-9a-z]+(\.dirty)?|\+dirty)?$`).MatchString(v) {
+		t.Errorf("version %q is not a shape we intend to emit", v)
+	}
+}
+
+// An explicit stamp must always win, because that is what a release build relies on.
+func TestExplicitStampWinsOverBuildInfo(t *testing.T) {
+	saved := binVersion
+	t.Cleanup(func() { binVersion = saved })
+
+	binVersion = "9.9.9"
+	if got := resolveVersion(); got != "9.9.9" {
+		t.Errorf("resolveVersion() = %q, want the stamped 9.9.9", got)
+	}
+
+	// With the sentinel in place the fallback runs. It cannot be asserted to produce a real
+	// version here: `go test` builds its binary without VCS stamping, so "dev" is the correct
+	// and only available answer inside a test. What matters is that the previous stamp is gone
+	// and the result is still a usable string. The real fallback is covered by
+	// TestUnstampedBuildReportsSomethingReal, which builds an actual binary.
+	binVersion = devVersion
+	got := resolveVersion()
+	if got == "9.9.9" {
+		t.Error("the previous stamp leaked through after being cleared")
+	}
+	if got == "" {
+		t.Error("resolveVersion() returned nothing; every build must report some identity")
+	}
+}
+
+// The point of the whole exercise: `go build` with no ldflags must not report a hardcoded
+// literal that goes stale the moment a new version is tagged.
+func TestUnstampedBuildReportsSomethingReal(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go toolchain")
+	}
+	bin := t.TempDir() + "/claude-runway"
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+	out, err := exec.Command(bin, "version").Output()
+	if err != nil {
+		t.Fatalf("version failed: %v", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got == "" || got == devVersion {
+		t.Errorf("unstamped build reported %q, which carries no identity at all", got)
+	}
+	if strings.Count(got, "dirty") > 1 {
+		t.Errorf("unstamped build reported %q with a doubled marker", got)
+	}
+}
