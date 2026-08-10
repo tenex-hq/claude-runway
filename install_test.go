@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -151,6 +152,41 @@ func TestInstallSkillsRejectsUnknownFlag(t *testing.T) {
 	}
 	if !strings.HasPrefix(out.String(), "error: unknown flag") {
 		t.Errorf("output: %s", out.String())
+	}
+}
+
+// The skill documents a shell watcher. A snippet an agent copies has to at least parse, and
+// its dangerous-to-omit branches have to be present: a watcher that cannot distinguish "cannot
+// read the budget" from "still above the floor" waits forever and looks like success.
+func TestEmbeddedWatcherSnippetIsSound(t *testing.T) {
+	body, err := skillFS.ReadFile("skills/claude-runway/SKILL.md")
+	if err != nil {
+		t.Fatalf("skill not embedded: %v", err)
+	}
+	var snippet string
+	for _, b := range strings.Split(string(body), "```bash\n") {
+		if i := strings.Index(b, "```"); i >= 0 && strings.Contains(b[:i], "while :;") {
+			snippet = b[:i]
+		}
+	}
+	if snippet == "" {
+		t.Fatal("the watcher snippet is gone from the skill")
+	}
+	for _, want := range []string{"FLOOR=", "INTERVAL=", "not-applicable", "cannot read the budget", "window reset", "exit 0"} {
+		if !strings.Contains(snippet, want) {
+			t.Errorf("watcher snippet no longer handles %q", want)
+		}
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("no bash to syntax-check with")
+	}
+	f := filepath.Join(t.TempDir(), "snip.sh")
+	if err := os.WriteFile(f, []byte(snippet), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// -n parses without executing, so this never polls the endpoint.
+	if out, err := exec.Command("bash", "-n", f).CombinedOutput(); err != nil {
+		t.Errorf("documented watcher does not parse: %v\n%s", err, out)
 	}
 }
 

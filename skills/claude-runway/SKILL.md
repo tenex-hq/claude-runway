@@ -49,15 +49,81 @@ left is the one that actually runs dry.
 headroom means the remaining budget more than covers the remaining time, so you are safe to
 push. Negative means you are burning faster than the clock.
 
-## Gating long work
+## Working to a budget target
+
+Two phrasings sound alike and are not:
+
+| Instruction | Means | Needs |
+|---|---|---|
+| "until only 60% of the weekly budget is left" | An absolute floor: stop at `left_pct <= 60` | Nothing but a comparison |
+| "until you have consumed 10% of the weekly budget" | A delta: stop at `left_pct <= start - 10` | Knowing where you started |
+
+Percentages are remaining, so "consumed 10%" means ten percentage **points** off the window,
+not 10% of what is left, and not tokens or money. On a weekly allowance that is a lot of work.
+
+### The primary mechanism: check between units of work
+
+Work, commit, check, repeat. Commit **before** you stop, so a boundary never costs progress.
+
+```bash
+claude-runway --json | jq -e '.windows[]?|select(.window=="weekly")|.percent_left > 60' >/dev/null
+# exit 0 -> keep working
+# non-zero -> floor reached, OR the reading failed. These are not the same thing:
+#            re-run `claude-runway --brief` and look for `error:` before concluding
+#            anything about the budget.
+```
 
 Check every few units of work, not every iteration. Readings are cached for 5 minutes, so a
-frequent check is cheap, but there is no value in more resolution than that: the windows are
-5 hours and 7 days.
+frequent check is cheap, but finer resolution buys nothing against a 5-hour or 7-day window.
 
-When told to work "until the weekly budget is down to 45%", that means keep going while more
-than 45% is **left**. Commit progress as you go, so nothing is lost if the budget or the
-session ends mid-task.
+### For a delta, fix the target once at the start
+
+Convert it to an absolute floor immediately, then you never need to remember the baseline:
+
+```bash
+start=$(claude-runway --json | jq -r '.windows[]?|select(.window=="weekly").percent_left')
+echo "floor = $((start - 10))"     # write this into your task notes or the task tracker
+```
+
+Do not carry the baseline only in your head. Context can be compacted, a sub-agent does not
+inherit it, and a resumed turn will not have it. If several agents share one budget they must
+share one floor, or they will each spend the full amount.
+
+### Optional backstop: a watcher for long uninterruptible stretches
+
+When a single step runs long enough that you cannot check between units, arm a background
+watcher that exits when the floor is crossed. Use a **backgrounded shell command that exits on
+the condition**, which yields exactly one notification. Do not use a per-occurrence monitor for
+this: it stays armed after firing.
+
+```bash
+FLOOR=60; INTERVAL=300; FAILS=0; BASE=""
+while :; do
+  j=$(claude-runway --json 2>/dev/null)
+  [ "$(jq -r '.status // empty' <<<"$j")" = "not-applicable" ] && { echo "STOP: custom provider, no window to watch"; exit 2; }
+  left=$(jq -r '.windows[]?|select(.window=="weekly")|.percent_left // empty' <<<"$j")
+  reset=$(jq -r '.windows[]?|select(.window=="weekly")|.resets_at // empty' <<<"$j")
+  case "$left" in
+    ''|*[!0-9]*) FAILS=$((FAILS+1)); [ $FAILS -ge 5 ] && { echo "STOP: cannot read the budget; NOT a budget signal"; exit 3; };;
+    *) FAILS=0; [ -z "$BASE" ] && BASE=$reset
+       [ "$reset" != "$BASE" ] && { echo "STOP: window reset, allowance refilled to ${left}%; floor unreachable"; exit 4; }
+       [ "$left" -le $FLOOR ] && { echo "FLOOR REACHED: weekly at ${left}% left"; exit 0; };;
+  esac
+  sleep $INTERVAL
+done
+```
+
+Every branch exits with a distinct code and says which happened, on purpose:
+
+- **Silence is not success.** A bare `until ... jq -e` loop cannot tell "cannot read the budget"
+  from "still above the floor", so a broken credential looks exactly like a budget that never
+  ran down, and the watcher waits forever.
+- **A window reset makes a floor unreachable.** Over 7 days this really happens: the allowance
+  refills, `left_pct` jumps up, and the threshold is never crossed.
+
+Two limits: a backgrounded watcher **dies with the session**, so it is not an overnight watch
+across restarts, and its notification arrives **between turns**, so it cannot interrupt work
+already in flight. That is why it is a backstop and the inline check is the primary mechanism.
 
 ## Three traps
 
