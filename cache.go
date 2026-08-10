@@ -22,9 +22,15 @@ import (
 //
 // The cache holds only derived numbers. The token is never written here.
 
+// The TTL is set from measurement, not taste. Probing the endpoint: a second call 250ms
+// after the first is refused once the burst allowance is drained, and recovery took 120s
+// of polling to clear. Against that, the data being reported moves over a 5h and a 7d
+// window, so a 5-minute-old reading is barely different from a live one. Anything finer
+// buys resolution the data does not have and pays for it in 429s. (Independent support:
+// autodev's own background sampler polls this endpoint every 5 minutes.)
 const (
-	cacheTTL      = 60 * time.Second // serve without touching the network
-	cacheMaxStale = 6 * time.Hour    // beyond this, a stale reading is misleading, not useful
+	cacheTTL      = 5 * time.Minute // serve without touching the network
+	cacheMaxStale = 6 * time.Hour   // beyond this, a stale reading is misleading, not useful
 )
 
 type cachedBucket struct {

@@ -147,6 +147,26 @@ func TestRateLimitOnTheMeterIsNotBudgetExhaustion(t *testing.T) {
 	if f.help == "" {
 		t.Error("429 should tell the caller what to do")
 	}
+	// Measured: recovery took 120s and the endpoint's Retry-After always reads 0. Telling a
+	// caller to retry straight away would send it back into the wall, so the wait is pinned
+	// here against a well-meaning future edit.
+	if !strings.Contains(f.help, "2 minutes") {
+		t.Errorf("429 help must state how long to wait, got: %s", f.help)
+	}
+	for _, wrong := range []string{"wait a moment", "retry immediately", "try again now"} {
+		if strings.Contains(strings.ToLower(f.help), wrong) {
+			t.Errorf("429 help suggests an immediate retry (%q), which the measurement contradicts: %s", wrong, f.help)
+		}
+	}
+}
+
+// The TTL is a measured decision, not a preference: below the endpoint's recovery time it
+// would trip 429s that the cache exists to prevent.
+func TestCacheTTLCoversMeasuredRecovery(t *testing.T) {
+	const measuredRecovery = 120 * time.Second
+	if cacheTTL < measuredRecovery {
+		t.Errorf("cacheTTL = %v, which is below the %v recovery measured against the live endpoint", cacheTTL, measuredRecovery)
+	}
 }
 
 func TestFmtAgeHasSecondResolution(t *testing.T) {

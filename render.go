@@ -227,8 +227,11 @@ func describeFailure(r reading) failureText {
 		return failureText{
 			key:     "error",
 			message: "the usage endpoint rate-limited this tool (HTTP 429). This is a limit on reading the meter, NOT your subscription allowance: your actual budget is unchanged and currently unknown.",
-			help:    "wait a moment and re-run. Do not poll in a tight loop; readings are cached for " + cacheTTLFromEnv().String() + " so a per-iteration check is already cheap.",
-			exit:    exitError,
+			// Measured, so the number is worth stating: recovery took 120s in testing, and the
+			// endpoint's own Retry-After header always reads 0, which would send a caller
+			// straight back into the wall. Do not suggest an immediate retry.
+			help: "wait about 2 minutes before retrying; this endpoint recovered in 120s when measured, and its Retry-After header always reads 0 so it cannot be used to time the wait. Readings are cached for " + cacheTTLFromEnv().String() + ", so a per-iteration check is already cheap and should not need a retry at all.",
+			exit: exitError,
 		}
 	}
 	switch r.reason {

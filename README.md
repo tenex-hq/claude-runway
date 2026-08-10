@@ -78,11 +78,27 @@ that.
 
 ## Caching, and why it is not optional
 
-The usage endpoint **rate-limits reads with HTTP 429**. This was measured, not guessed: the
-tool earned one while being built. Since the intended caller is an agent checking its budget
-inside a work loop, an uncached tool would poison the thing it reports on. So:
+The usage endpoint **rate-limits reads with HTTP 429**, and it is strict. Measured against
+the live endpoint:
 
-- A reading younger than 60s is served from cache without touching the network.
+| | |
+|---|---|
+| Calls before refusal | a second call 250ms after the first, once the burst allowance is drained |
+| Recovery | **120s**, while polling every 15s |
+| `Retry-After` header | present on every 429, value always `0`, therefore useless |
+
+Two caveats on those numbers. There is real burst allowance: several consecutive calls do
+get through from a rested bucket, and measuring its true size needs a long idle period
+first. And the 120s figure cannot be separated from the polling that measured it, so treat
+it as an upper bound on quiet recovery rather than a window length.
+
+Since the intended caller is an agent checking its budget inside a work loop, an uncached
+tool would poison the thing it reports on. So:
+
+- A reading younger than 5 minutes is served from cache without touching the network. The
+  TTL is set from those measurements: the data moves over a 5h and a 7d window, so a
+  5-minute-old reading is barely different from a live one, and anything finer buys
+  resolution the data does not have while paying for it in 429s.
 - When a live read fails, the last reading is served with its age stated, rather than
   nothing. A number labelled "16s old" beats "unavailable"; the label is what keeps it honest.
 
@@ -142,7 +158,7 @@ out of the process table.
 |---|---|
 | `ANTHROPIC_BASE_URL` | Report `not-applicable`, send no token |
 | `CLAUDE_RUNWAY_FORCE_CURL=1` | Skip Go's HTTP client, use system `curl` |
-| `CLAUDE_RUNWAY_CACHE_SECONDS` | Cache TTL in seconds (default 60) |
+| `CLAUDE_RUNWAY_CACHE_SECONDS` | Cache TTL in seconds (default 300) |
 | `CLAUDE_RUNWAY_NO_CACHE=1` | Never read or write the cache |
 
 ## Exit codes

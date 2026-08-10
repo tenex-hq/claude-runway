@@ -45,14 +45,15 @@ Percentages are REMAINING: 100 means untouched, 0 means exhausted. Pace compares
 left against time left in the window, so positive headroom means you are safe to push.
 The verdict (safe, caution, stop) already combines the windows.
 
-Readings are cached for 60s, because the usage endpoint rate-limits repeated calls with
-HTTP 429. That makes a per-iteration budget check safe. When a live read fails, the last
-reading is served instead, labelled with its age, rather than nothing.
+Readings are cached for 5 minutes, because the usage endpoint rate-limits repeated calls
+with HTTP 429 and took 120s to recover when measured. That makes a per-iteration budget
+check safe. When a live read fails, the last reading is served instead, labelled with its
+age, rather than nothing.
 
 Environment:
   ANTHROPIC_BASE_URL           If set, reports not-applicable and sends no token anywhere
   CLAUDE_RUNWAY_FORCE_CURL=1   Skip Go's HTTP client, use the system curl
-  CLAUDE_RUNWAY_CACHE_SECONDS  Cache TTL in seconds (default 60)
+  CLAUDE_RUNWAY_CACHE_SECONDS  Cache TTL in seconds (default 300)
   CLAUDE_RUNWAY_NO_CACHE=1     Never read or write the cache
 
 Examples:
