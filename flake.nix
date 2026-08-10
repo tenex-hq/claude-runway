@@ -10,7 +10,7 @@
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      version = "0.3.1";
+      version = "0.4.0";
       # Same text as the flake's own `description` above. It cannot be shared: that
       # attribute is evaluated outside this let binding.
       summary = "How much of your Claude subscription allowance is left, and whether it will last to the reset";

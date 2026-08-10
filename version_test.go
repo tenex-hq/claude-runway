@@ -57,7 +57,13 @@ func TestExplicitStampWinsOverBuildInfo(t *testing.T) {
 }
 
 // The point of the whole exercise: `go build` with no ldflags must not report a hardcoded
-// literal that goes stale the moment a new version is tagged.
+// literal that goes stale the moment a new version is tagged. It must instead derive identity
+// from whatever the build actually offers.
+//
+// What it can offer depends on where the build happens, which is the subtlety: a Nix build
+// unpacks the source from a store path with no .git and no module version, so "dev" is the
+// correct and only available answer there. An earlier version of this test asserted "dev" was
+// never acceptable and failed inside the Nix sandbox, contradicting the documented behaviour.
 func TestUnstampedBuildReportsSomethingReal(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("no go toolchain")
@@ -71,10 +77,22 @@ func TestUnstampedBuildReportsSomethingReal(t *testing.T) {
 		t.Fatalf("version failed: %v", err)
 	}
 	got := strings.TrimSpace(string(out))
-	if got == "" || got == devVersion {
-		t.Errorf("unstamped build reported %q, which carries no identity at all", got)
+
+	if got == "" {
+		t.Fatal("unstamped build reported nothing at all")
+	}
+	// The regression that matters: a stale hardcoded number. "dev" is honest; "0.2.0-dev"
+	// baked into the source while the repo has moved on is not.
+	if regexp.MustCompile(`^\d+\.\d+\.\d+-dev$`).MatchString(got) {
+		t.Errorf("unstamped build reported %q, which looks like a hardcoded literal", got)
 	}
 	if strings.Count(got, "dirty") > 1 {
 		t.Errorf("unstamped build reported %q with a doubled marker", got)
+	}
+
+	// Only demand real identity when the build had VCS metadata to draw on.
+	inVCS := exec.Command("git", "rev-parse", "--is-inside-work-tree").Run() == nil
+	if inVCS && got == devVersion {
+		t.Errorf("built inside a git work tree but reported the bare sentinel %q; VCS info was available and unused", got)
 	}
 }
