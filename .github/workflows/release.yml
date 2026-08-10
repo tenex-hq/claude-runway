@@ -1,0 +1,38 @@
+name: release
+
+# Tag-driven. `git tag -a v0.2.0 -m ... && git push origin v0.2.0` is the whole
+# release procedure; GoReleaser derives the version from the tag.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # needed to create the GitHub Release
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # GoReleaser needs the full history and tags to build a changelog and
+          # work out the version. A shallow clone makes it fail.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A PAT with contents:write on tenex-hq/homebrew-tap. The default
+          # GITHUB_TOKEN above is scoped to this repository only and cannot push the
+          # cask to another one, so without this secret the release will fail at the
+          # homebrew step, after the GitHub Release has already been created.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

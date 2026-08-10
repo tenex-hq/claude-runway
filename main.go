@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const binVersion = "0.2.0"
+// A var, not a const, so a release build can stamp the real version in with
+// `-ldflags "-X main.binVersion=..."`. As a const it would silently report this
+// literal forever, no matter what was tagged.
+var binVersion = "0.2.0-dev"
 
 // One sentence, printed in the home view so an agent that runs the bare command learns
 // what this is without a second call (AXI principle 8).

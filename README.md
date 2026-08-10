@@ -30,14 +30,45 @@ two facts; whether you are about to run dry is a third, and that is what `verdic
 ## Install
 
 ```bash
+# Homebrew
+brew install tenex-hq/tap/claude-runway
+
+# Go
 go install github.com/tenex-hq/claude-runway@latest
+
+# Nix
+nix profile install github:tenex-hq/claude-runway
+nix run github:tenex-hq/claude-runway            # without installing
 ```
 
-Or build for wherever you need it. No cgo, so the binary is static:
+In a nix-darwin or NixOS config, add the flake as an input:
+
+```nix
+inputs.claude-runway.url = "github:tenex-hq/claude-runway";
+# then, in your packages list:
+inputs.claude-runway.packages.${pkgs.system}.default
+```
+
+Or grab a prebuilt binary from [Releases](https://github.com/tenex-hq/claude-runway/releases),
+or build for wherever you need it. No cgo, so every target is static:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w"
 ```
+
+### A note on unsigned macOS binaries
+
+The release archives are not code-signed, because signing requires a paid Apple Developer
+account. macOS quarantines unsigned downloads and refuses to run them, so the Homebrew cask
+clears the quarantine flag on the installed binary in a `postflight` hook.
+
+Be clear about what that trades away. Gatekeeper's check is "was this signed by a developer
+Apple recognises", which no unsigned open-source binary can pass. Integrity is still
+enforced: Homebrew verifies the downloaded archive against the sha256 recorded in the cask.
+What is given up is Apple's opinion of the publisher, not tamper detection.
+
+If you would rather not accept that at all, `go install` and the Nix flake both compile
+locally from source and never involve quarantine.
 
 As an MCP server in Claude Code:
 
@@ -210,6 +241,31 @@ that the cache holds no secret, CLI exit codes and stderr silence, and the MCP p
 (handshake, version echo, notification handling, error codes, and a request on an unterminated
 final line). Network paths were verified by hand against the live endpoint on both transports,
 including a real 429 and recovery from it.
+
+## Releasing
+
+Tagging is the whole procedure. `.github/workflows/release.yml` fires on `v*`, and
+GoReleaser builds the five targets, publishes a GitHub Release, and pushes the updated cask
+to [`tenex-hq/homebrew-tap`](https://github.com/tenex-hq/homebrew-tap).
+
+```bash
+goreleaser check                              # validate the config
+goreleaser release --snapshot --clean         # full dry run, no publishing
+git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
+```
+
+Two prerequisites, both easy to trip over:
+
+- **`HOMEBREW_TAP_TOKEN`** must exist as a repository secret: a PAT with `contents:write` on
+  the tap repo. The default `GITHUB_TOKEN` is scoped to this repository and cannot push to
+  another one. Without it the release fails at the Homebrew step, *after* the GitHub Release
+  has already been created.
+- **`binVersion` is a `var`, not a `const`** (`main.go`), because `-ldflags -X` cannot write
+  to a const. If it ever becomes a const again, every release will silently report the
+  in-repo development version.
+
+The `version` in `flake.nix` is set by hand and is not derived from the tag. Bump it in the
+same commit as the tag, or `nix` installs will report a stale version.
 
 ## Prior art
 

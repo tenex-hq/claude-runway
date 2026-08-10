@@ -1,0 +1,100 @@
+# Release pipeline. Validate changes with `goreleaser check`, and dry-run the whole
+# thing with `goreleaser release --snapshot --clean` before tagging anything.
+version: 2
+
+project_name: claude-runway
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+    - go test ./...
+
+builds:
+  - id: claude-runway
+    main: .
+    binary: claude-runway
+    # No cgo, so every target is a static binary and none of them need a
+    # cross-toolchain.
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    # binVersion is a var precisely so this works. Without the -X it would report
+    # the in-repo development default forever.
+    ldflags:
+      - -s -w -X main.binVersion={{ .Version }}
+
+archives:
+  - id: default
+    # `formats` (plural). The singular `format` is deprecated as of GoReleaser v2.6.
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+homebrew_casks:
+  - name: claude-runway
+    repository:
+      owner: tenex-hq
+      name: homebrew-tap
+      branch: main
+      # The default GitHub Actions token cannot write to a different repository, so
+      # the tap needs its own PAT with contents:write on tenex-hq/homebrew-tap.
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/tenex-hq/claude-runway"
+    description: "How much of your Claude subscription allowance is left, and whether it will last to the reset"
+    commit_author:
+      name: NicolasBissig
+      email: nicbissig@gmail.com
+    # The binaries in a release archive are unsigned, because signing needs a paid
+    # Apple Developer account. macOS therefore quarantines them and refuses to run
+    # them ("claude-runway is damaged and cannot be opened"), which would make
+    # `brew install` simply not work on the platform most users are on.
+    #
+    # This hook clears the quarantine flag on the installed binary. Be clear about
+    # what that trades away: Gatekeeper's check is "was this signed by a developer
+    # Apple knows", which no unsigned open-source binary can ever pass. Integrity
+    # is still enforced, by Homebrew verifying the archive against the sha256 in
+    # this cask. What is lost is Apple's opinion of the publisher, not tamper
+    # detection.
+    #
+    # If you would rather not accept that at all, install from source instead:
+    # `go install github.com/tenex-hq/claude-runway@latest`, or the flake. Both
+    # compile locally and never involve quarantine.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/claude-runway"],
+                           must_succeed: false
+          end
+
+release:
+  footer: |
+    ## Install
+
+    ```bash
+    brew install tenex-hq/tap/claude-runway
+    go install github.com/tenex-hq/claude-runway@{{ .Tag }}
+    nix profile install github:tenex-hq/claude-runway/{{ .Tag }}
+    ```
