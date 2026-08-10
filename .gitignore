@@ -1,0 +1,3 @@
+# Built binary (same name as the module, so `go build` with no -o drops it here)
+/claude-runway
+/dist/
