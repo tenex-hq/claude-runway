@@ -1,0 +1,69 @@
+name: The usage endpoint changed
+description: The undocumented endpoint returned a shape, status or field this tool does not understand.
+labels: ["endpoint-drift"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        This has its own template because it is the failure this project expects to outlive
+        everything else. `GET /api/oauth/usage` is undocumented and can change or vanish
+        without notice, which is why every failure here returns an explanation rather than
+        a number. A report that pins down the new shape is the most useful contribution
+        there is.
+
+
+        **Do not paste a raw response if you have not looked at it first.** Redact anything
+        that is not a window name, a `utilization`, a `resets_at`, a `severity` or a `kind`.
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: Which symptom
+      options:
+        - "error: the usage endpoint returned something unexpected (no known windows in response)"
+        - "error: the usage endpoint returned something unexpected (response was not JSON)"
+        - "An HTTP status other than 200, 403 or 429"
+        - "A window is missing that used to be reported"
+        - "A new window appeared that is not reported"
+        - "utilization or resets_at changed type or units"
+        - "Something else"
+    validations:
+      required: true
+
+  - type: input
+    id: status
+    attributes:
+      label: HTTP status observed
+      placeholder: "200 / 401 / 404 / 500"
+    validations:
+      required: false
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: The response shape, redacted
+      description: >-
+        Keys and types are what matter, not values. `jq 'to_entries | map({key, type:
+        (.value|type)})'` produces exactly the right amount of information.
+      render: json
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `claude-runway version`.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: transports
+    attributes:
+      label: Transports tried
+      description: >-
+        Go's TLS stack is not undici's, so the two can get different answers from the same
+        endpoint. Knowing whether both fail narrows the cause considerably.
+      options:
+        - label: "Default (Go `net/http`)"
+        - label: "`CLAUDE_RUNWAY_FORCE_CURL=1`"
