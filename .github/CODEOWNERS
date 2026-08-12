@@ -1,0 +1,4 @@
+# Every path has one owner. This is what makes the "review before merge" rule on `main`
+# resolve to a specific person rather than to nobody, which is the failure mode a
+# single-maintainer repo drifts into by default.
+* @NicolasBissig

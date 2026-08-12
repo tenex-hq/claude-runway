@@ -1,0 +1,10 @@
+# Blank issues stay enabled on purpose. The templates below cover the cases we can
+# anticipate, and a tool built on an undocumented endpoint will produce cases we cannot.
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/tenex-hq/claude-runway/security/advisories/new
+    about: >-
+      Anything touching credential handling or token leakage goes here, privately, not in a
+      public issue. This tool reads the OAuth token Claude Code stores locally, so a report
+      that looks routine to you may not be.

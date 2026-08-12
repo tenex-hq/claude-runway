@@ -3,7 +3,7 @@
 How much of your Claude subscription allowance is **left**, and whether it will last to the
 reset. A single static Go binary, no dependencies, no runtime to install.
 
-Usable three ways: as a CLI, as an MCP server, and as a Go package.
+Usable two ways: as a CLI and as an MCP server.
 
 ```console
 $ claude-runway --brief
@@ -65,10 +65,43 @@ clears the quarantine flag on the installed binary in a `postflight` hook.
 Be clear about what that trades away. Gatekeeper's check is "was this signed by a developer
 Apple recognises", which no unsigned open-source binary can pass. Integrity is still
 enforced: Homebrew verifies the downloaded archive against the sha256 recorded in the cask.
-What is given up is Apple's opinion of the publisher, not tamper detection.
+What is given up is Apple's opinion of the publisher, not tamper detection, and not publisher
+verification in general: releases carry a cosign signature and a build provenance
+attestation, which answer the same question Gatekeeper does without involving Apple. See
+[Verifying a release](#verifying-a-release).
 
 If you would rather not accept that at all, `go install` and the Nix flake both compile
 locally from source and never involve quarantine.
+
+### Verifying a release
+
+`checksums.txt` covers every uploaded artifact, and it is signed keyless with
+[cosign](https://docs.sigstore.dev/), so verifying it verifies the whole release. There is no
+public key to fetch: the signature is bound to the workflow that produced it.
+
+```bash
+cosign verify-blob \
+  --bundle checksums.txt.cosign.bundle \
+  --certificate-identity "https://github.com/tenex-hq/claude-runway/.github/workflows/release.yml@refs/tags/v0.4.0" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+sha256sum --check --ignore-missing checksums.txt
+```
+
+Both `--certificate-identity` and `--certificate-oidc-issuer` are required. Without them
+cosign accepts a signature from any identity Sigstore will issue to, which is anyone with a
+GitHub account, and the check proves nothing.
+
+Every archive also carries a GitHub build provenance attestation, which is a stronger claim
+than a signature: it records which workflow, which commit and which runner produced that exact
+file. It needs no certificate flags to get wrong.
+
+```bash
+gh attestation verify claude-runway_0.4.0_darwin_arm64.tar.gz --repo tenex-hq/claude-runway
+```
+
+Each archive additionally ships an SPDX SBOM (`<archive>.sbom.json`). For a zero-dependency
+binary the interesting part is how short it is.
 
 As an MCP server in Claude Code:
 
@@ -225,7 +258,7 @@ out of the process table.
 |---|---|
 | `ANTHROPIC_BASE_URL` | Report `not-applicable`, send no token |
 | `CLAUDE_RUNWAY_FORCE_CURL=1` | Skip Go's HTTP client, use system `curl` |
-| `CLAUDE_RUNWAY_CACHE_SECONDS` | Cache TTL in seconds (default 300) |
+| `CLAUDE_RUNWAY_CACHE_SECONDS` | Cache TTL in seconds (default 300). `0` always reads live. A value that is not a whole number of seconds, or is negative, is a usage error and exits 2 rather than quietly falling back to the default |
 | `CLAUDE_RUNWAY_NO_CACHE=1` | Never read or write the cache |
 
 ## Exit codes
@@ -234,7 +267,7 @@ out of the process table.
 |---|---|
 | 0 | A reading, or a definite non-answer such as a custom provider |
 | 1 | The reading could not be taken |
-| 2 | Usage error: unknown flag, unknown command, unknown field |
+| 2 | Usage error: unknown flag, unknown command, unknown field, an argument passed to a subcommand that takes none, or a malformed `CLAUDE_RUNWAY_CACHE_SECONDS` |
 
 Errors go to **stdout** as structured `error:` and `help:` lines, not to stderr, so an agent
 capturing stdout always sees why. stderr stays empty.
@@ -262,33 +295,62 @@ On an M-series Mac, `darwin/arm64`:
 |---|---|
 | Binary size | 5.7 MB, static, no cgo |
 | Startup + cached read | 8.5 ms |
-| Cross-compiles cleanly | darwin/{arm64,amd64}, linux/{amd64,arm64}, windows/amd64 (5.6-6.3 MB) |
+| Cross-compiles cleanly | darwin/{arm64,amd64}, linux/{arm64,amd64}, windows/{arm64,amd64} (5.6-6.3 MB) |
 
 ## Tests
 
 ```bash
-go test ./...
+go test -race ./...
 ```
 
-Covers the pace math, the verdict's tie-breaking, payload parsing including the empty-window
-case, the cache round trip and its refusal of ancient or future readings, the guarantee that
-no failure ever renders something mistakable for a percentage, the stale-fallback labelling,
-that the cache holds no secret, CLI exit codes and stderr silence, and the MCP protocol
-(handshake, version echo, notification handling, error codes, and a request on an unterminated
-final line). Network paths were verified by hand against the live endpoint on both transports,
-including a real 429 and recovery from it.
+90 tests, 89% statement coverage, about 3 seconds. Tests assert behavioural contracts rather
+than implementation, so the names read as guarantees:
+`TestFailuresNeverRenderNumbers`, `TestCacheHoldsNoSecret`,
+`TestRateLimitOnTheMeterIsNotBudgetExhaustion`, `TestDoctorNeverPrintsTheToken`,
+`TestCustomProviderSendsNoRequestAtAll`, `TestTokenReachesCurlOnStdinAndNeverInArgv`.
+
+Covered: the pace math and the verdict's tie-breaking; payload parsing including the
+empty-window case; the cache round trip, its 0600 mode, its refusal of ancient or future
+readings, and that it leaves no temp file behind; the guarantee that no failure ever renders
+something mistakable for a percentage; the stale-fallback labelling; credential parsing,
+including the subtlety that a missing expiry means *unknown* rather than expired; CLI exit
+codes and stderr silence; and the MCP protocol.
+
+Both transports run against an `httptest.Server`, which is why `usageURL` is a package
+variable: 200, a real 429, a clipped 500 body, malformed and unrecognised payloads, an
+oversized body, a refused connection, the 403 Go-to-curl fallback (and that a curl failure
+does not overwrite the honest 403), and that a set `ANTHROPIC_BASE_URL` or an expired token
+results in **zero** requests reaching the server.
+
+The suite is hermetic: no network beyond loopback, `HOME` and `XDG_CACHE_HOME` redirected to a
+scratch dir, and the macOS Keychain faked rather than touched. That is what lets `nix build`
+run it inside the sandbox with `doCheck = true`.
+
+Three things the tests do not prove, worth naming rather than implying: the 15s transport
+deadline is not exercised (observing it means waiting for it, so the shared error path is
+covered by refused and dropped connections instead); cache atomicity is not proven, only that
+no temp file survives and the published file parses; and the Keychain tests exercise the
+exec-and-parse plumbing against a stub, not the real Keychain. Live behaviour, including a
+genuine 429 and recovery from it, was checked by hand against the real endpoint on both
+transports.
 
 ## Releasing
 
 Tagging is the whole procedure. `.github/workflows/release.yml` fires on `v*`, and
-GoReleaser builds the five targets, publishes a GitHub Release, and pushes the updated cask
+GoReleaser builds the six targets, publishes a GitHub Release, and pushes the updated cask
 to [`tenex-hq/homebrew-tap`](https://github.com/tenex-hq/homebrew-tap).
 
 ```bash
-goreleaser check                              # validate the config
+goreleaser check                              # validate the config (CI runs this on every PR too)
 goreleaser release --snapshot --clean         # full dry run, no publishing
 git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
 ```
+
+Before it publishes anything, the job checks that `flake.nix` agrees with the tag, then runs
+`go vet` and the test suite as their own steps. Those two used to be GoReleaser `before` hooks,
+which put them inside the step holding `HOMEBREW_TAP_TOKEN`, a PAT with write access to another
+repository. Test code is the least reviewed code in the repo and the worst place to hand a
+cross-repo token, so they were moved out.
 
 Two prerequisites, both easy to trip over:
 
@@ -300,8 +362,12 @@ Two prerequisites, both easy to trip over:
   to a const. If it ever becomes a const again, every release will silently report the
   in-repo development version.
 
-The `version` in `flake.nix` is set by hand and is not derived from the tag. Bump it in the
-same commit as the tag, or `nix` installs will report a stale version.
+The `version` in `flake.nix` is set by hand and is not derived from the tag, because a flake has
+to evaluate from a plain checkout with no tags present. Bump it in the commit the tag points at,
+or `nix` installs report a stale version. This drifted twice before the release job started
+refusing a mismatch, and the symptom was quiet: Homebrew and `go install` reported the right
+version while `nix profile install` reported an older one, on a release that looked entirely
+successful.
 
 ## Prior art
 
@@ -312,6 +378,18 @@ same commit as the tag, or `nix` installs will report a stale version.
   token counts and costs. Estimated spend, not official utilization. Different question.
 - [`AlbeeDev/claude-usage`](https://github.com/AlbeeDev/claude-usage): CLI plus MCP tool, but
   scrapes claude.ai through a browser you stay logged into. Also surfaces credits.
+
+## Contributing
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the build, test and lint commands CI actually runs,
+the zero-dependency rule and why it is one, the comment convention, and the behavioural
+invariants a change must not break. Most of this repository is written by AI agents, which it
+says out loud and pairs with the actual gate: CI green, a pull request against a protected
+`main`, and a human review before merge.
+
+[`SECURITY.md`](SECURITY.md) has the threat model and the disclosure route. This tool reads a
+live OAuth token off your machine, so anything touching credential handling goes through
+private vulnerability reporting rather than a public issue.
 
 ## License
 

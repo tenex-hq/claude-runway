@@ -1,0 +1,39 @@
+name: Feature request
+description: Something this should do that it does not.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Two standing constraints, so you can argue against them deliberately rather than
+        run into them by surprise. **Zero dependencies:** `go.mod` has no requires, and
+        that is why there is no `go.sum`, why the Nix build needs no `vendorHash`, and why
+        the binary is a 5.7 MB static artifact with no dependency CVE surface. **The output
+        is for an agent first.** Fields cost tokens on every call, so a new default column
+        has to earn its place against `--fields`.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The decision you cannot make today
+      description: >-
+        Describe the situation, not the feature. This tool exists to answer "can I keep
+        going", so the most useful framing is which call you are unable to make with the
+        current output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would have it do
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: "This needs no new Go module dependency, or the description above argues for one."
+        - label: "This does not require sending the OAuth token anywhere new."

@@ -1,0 +1,67 @@
+name: Bug report
+description: Something behaves differently from what the README says it does.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Before you paste anything:** `claude-runway doctor` is safe to share, it never
+        prints the token. Raw `~/.claude/.credentials.json` is not safe to share. If the
+        bug involves the token itself, close this and use
+        [private vulnerability reporting](https://github.com/tenex-hq/claude-runway/security/advisories/new)
+        instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected instead
+      description: >-
+        Include the command you ran and its full output. Errors here are structured
+        `error:` and `help:` lines on stdout, so the output usually contains the answer.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `claude-runway version`.
+      placeholder: "0.4.0"
+    validations:
+      required: true
+
+  - type: input
+    id: install-method
+    attributes:
+      label: How you installed it
+      placeholder: "brew / go install / nix / prebuilt binary / built from source"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: "macOS 15.3 arm64 / Ubuntu 24.04 amd64 / Windows 11 amd64"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`claude-runway doctor` output"
+      description: >-
+        Safe to paste: it reports where credentials were found, never what they are. This
+        is the single most useful thing for a credential-source or platform bug.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: ruled-out
+    attributes:
+      label: Ruled out
+      options:
+        - label: "This is not a cached reading confusing me (`CLAUDE_RUNWAY_NO_CACHE=1` reproduces it too, or the output does not say `source: cache`)."
+        - label: "`ANTHROPIC_BASE_URL` is unset. When it is set the tool correctly reports `not-applicable` and sends no token anywhere."
