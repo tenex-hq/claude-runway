@@ -37,6 +37,16 @@ adding another.
 The Go toolchain version comes from `go.mod` (CI uses `go-version-file`), so there is one place
 to change it.
 
+Every `uses:` in both workflows is pinned to a full commit SHA with the version in a trailing
+comment, and the repository has GitHub's "require SHA pinning" setting enabled, so a workflow
+that references an action by tag is rejected before it runs. This is not stylistic: `release.yml`
+holds a PAT with write access to another repository, and a mutable tag means whoever controls it
+controls what executes next to that token. Dependabot rewrites the SHA and the comment together
+in a weekly grouped PR, which is the only way pinning survives contact with reality. If you add
+an action, resolve its SHA with
+`gh api repos/OWNER/REPO/git/ref/tags/vX.Y.Z --jq .object.sha` (dereference a second time if the
+tag object is annotated rather than a commit).
+
 There is a Nix flake with a devShell:
 
 ```bash
