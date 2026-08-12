@@ -96,11 +96,13 @@ func fmtRelative(d time.Duration) string {
 	if d <= 0 {
 		return "now"
 	}
-	min := int(math.Round(d.Minutes()))
-	if min < 60 {
-		return fmt.Sprintf("%dm", min)
+	// Not named `min`: that shadows the builtin added in Go 1.21, and a shadowed builtin is
+	// the kind of thing that reads fine until someone three lines down wants the real one.
+	mins := int(math.Round(d.Minutes()))
+	if mins < 60 {
+		return fmt.Sprintf("%dm", mins)
 	}
-	h, m := min/60, min%60
+	h, m := mins/60, mins%60
 	if h < 24 {
 		if m > 0 {
 			return fmt.Sprintf("%dh%dm", h, m)

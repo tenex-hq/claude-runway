@@ -1,3 +1,9 @@
+// Package main implements claude-runway: how much of a Claude subscription allowance is
+// left, and whether it will last to the window reset.
+//
+// Everything here is unexported on purpose. This is a command, not a library, and nothing
+// outside it can import `package main`, so an exported identifier would only imply an API
+// that does not exist.
 package main
 
 import (
@@ -88,19 +94,54 @@ func main() {
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// Environment first, before any entry point can read the cache with a TTL nobody asked
+	// for. Checked here rather than per subcommand so `mcp` is covered too: it consults the
+	// cache on every tools/call, and failing at startup means nothing is ever written into a
+	// live JSON-RPC stream. The cost is that a malformed value also refuses --help, which is
+	// why the message states the variable, the accepted values and the default, instead of
+	// pointing at help the caller cannot currently reach.
+	if problem := cacheTTLEnvError(); problem != "" {
+		// stdout everywhere except `mcp`, where stdout is the JSON-RPC channel and mcp.go's
+		// one hard rule is that nothing but protocol traffic goes there. Exiting before the
+		// stream starts means nothing is corrupted mid-conversation, but a client still reads
+		// whatever was written, and one bare `error:` line is a parse error rather than an
+		// explanation. On that path the message belongs on stderr, where the MCP server sends
+		// every other diagnostic.
+		w := stdout
+		if len(args) > 0 && args[0] == "mcp" {
+			w = stderr
+		}
+		fmt.Fprintf(w, "error: %s\nhelp: set it to a whole number of seconds (%d is the default, 0 always reads live), or unset it\n",
+			problem, int(cacheTTL.Seconds()))
+		return exitUsage
+	}
+
 	// Subcommands first: anything not starting with "-".
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "mcp":
 			return serveMCP(stdin, stdout, stderr)
 		case "doctor":
+			// doctor and version take no flags at all, so any argument is a mistake. Both used
+			// to accept and ignore one: `doctor --totally-bogus` printed the normal output and
+			// exited 0, while install-skills and the root command already exited 2 for the
+			// same typo. Three behaviours for one user error.
+			if len(args) > 1 {
+				return rejectSubcommandArgs(stdout, "doctor", args[1])
+			}
 			return runDoctor(stdout)
 		case "install-skills":
 			return runInstallSkills(args[1:], stdout)
 		case "version":
+			if len(args) > 1 {
+				return rejectSubcommandArgs(stdout, "version", args[1])
+			}
 			fmt.Fprintf(stdout, "%s\n", reportedVersion)
 			return exitOK
 		case "help":
+			// Left permissive on purpose, unlike doctor and version: `claude-runway help
+			// --fields` is someone asking what a flag does, and printing the help text answers
+			// that, where exiting 2 would answer nothing.
 			fmt.Fprintln(stdout, helpText)
 			return exitOK
 		default:
@@ -124,11 +165,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		case a == "--json":
 			asJSON = true
 		case strings.HasPrefix(a, "--fields="):
-			fields, bad := parseFields(strings.TrimPrefix(a, "--fields="))
-			if bad != "" {
+			fields, err := parseFields(strings.TrimPrefix(a, "--fields="))
+			if err != nil {
 				// Fail loud on an unknown field rather than silently dropping a column the
 				// caller asked for and expects to parse.
-				fmt.Fprintf(stdout, "error: unknown field %q\nhelp: available fields: %s\n", bad, strings.Join(knownFields(), ", "))
+				fmt.Fprintf(stdout, "error: %s\nhelp: available fields: %s\n", err, strings.Join(knownFields(), ", "))
 				return exitUsage
 			}
 			opts.fields = fields
@@ -154,21 +195,37 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-func parseFields(spec string) (fields []string, unknown string) {
+// parseFields resolves a --fields spec, or reports why it cannot. The two failures are worded
+// apart because they call for different fixes: an unknown name is a typo in a column, while an
+// empty list is a caller that built the flag out of a variable that turned out to be empty.
+// "unknown field" would be the wrong thing to tell the second one.
+//
+// The empty case was previously the one hole in the fail-loud rule: `--fields=` returned no
+// fields and no complaint, so it fell through to the default set, silently ignoring what the
+// caller asked for. (`--fields=,,,` did already error, just under the unknown-field wording.)
+func parseFields(spec string) ([]string, error) {
+	var fields []string
 	for _, f := range strings.Split(spec, ",") {
 		f = strings.TrimSpace(f)
 		if f == "" {
 			continue
 		}
 		if _, ok := fieldRenderers[f]; !ok {
-			return nil, f
+			return nil, fmt.Errorf("unknown field %q", f)
 		}
 		fields = append(fields, f)
 	}
 	if len(fields) == 0 {
-		return nil, spec
+		return nil, fmt.Errorf("--fields= names no fields")
 	}
-	return fields, ""
+	return fields, nil
+}
+
+// rejectSubcommandArgs is the shared refusal for subcommands that take nothing, so the wording
+// and the exit code cannot drift between them.
+func rejectSubcommandArgs(stdout io.Writer, cmd, arg string) int {
+	fmt.Fprintf(stdout, "error: unknown argument %q for `%s`\nhelp: `claude-runway %s` takes no flags. Run `claude-runway --help` for the flags the root command accepts.\n", arg, cmd, cmd)
+	return exitUsage
 }
 
 // binPath is best-effort: the home view is more useful with it, and not worth failing over.

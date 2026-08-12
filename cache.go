@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -67,6 +68,37 @@ func cacheTTLFromEnv() time.Duration {
 	return cacheTTL
 }
 
+// cacheTTLEnvError names a malformed CLAUDE_RUNWAY_CACHE_SECONDS, or returns "" when the
+// variable is absent or usable.
+//
+// CLAUDE_RUNWAY_CACHE_SECONDS=banana used to become the 300s default in silence, so a caller
+// who asked for a TTL and got a different one had no way to notice. That contradicts the
+// fail-loud rule the --fields path states outright. Of the two honest fixes, refusing at
+// startup beats printing a warning next to the numbers, because the numbers are consumed by
+// machines and a warning line they do not parse changes nothing.
+//
+// The check lives apart from cacheTTLFromEnv on purpose. cacheTTLFromEnv keeps its fallback
+// and its no-error signature because render.go's describeFailure calls it to build a help
+// string, where an error return would have to be invented and then ignored, and every other
+// call site would grow a branch it cannot act on. The tradeoff is that the fallback still
+// exists and must stay in agreement with this function about what "valid" means: both go
+// through strconv.Atoi with the same secs >= 0 rule. run() refuses first, so in practice
+// nothing reaches the fallback without having been told.
+func cacheTTLEnvError() string {
+	v := os.Getenv("CLAUDE_RUNWAY_CACHE_SECONDS")
+	if v == "" {
+		return ""
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Sprintf("CLAUDE_RUNWAY_CACHE_SECONDS=%q is not a whole number of seconds", v)
+	}
+	if secs < 0 {
+		return fmt.Sprintf("CLAUDE_RUNWAY_CACHE_SECONDS=%q is negative", v)
+	}
+	return ""
+}
+
 // writeCache is best effort: a machine with no writable cache directory should still get a
 // working tool, just without the 429 protection.
 func writeCache(r reading) {
@@ -97,12 +129,42 @@ func writeCache(r reading) {
 	if err != nil {
 		return
 	}
-	// Written 0600 and replaced atomically, so a concurrent reader never sees half a file.
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, buf, 0o600); err != nil {
+	// Written 0600 and replaced by rename, so a reader never sees half a file. The temp name
+	// has to be unique per process to make that true: it used to be a fixed p+".tmp", which
+	// meant two concurrent invocations (an agent loop plus a human in a terminal is an
+	// ordinary combination for this tool) shared one temp path, and either could rename a
+	// file the other was halfway through writing. That is exactly the tear the rename was
+	// there to prevent.
+	tmp, err := os.CreateTemp(filepath.Dir(p), "last-*.json")
+	if err != nil {
 		return
 	}
-	_ = os.Rename(tmp, p)
+	// Every path out of here from now on either renames the file or removes it: a cache
+	// directory slowly filling with half-written last-*.json files is a worse bug than the
+	// race this fixes.
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmp.Name())
+		}
+	}()
+	if _, err := tmp.Write(buf); err != nil {
+		_ = tmp.Close()
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		return
+	}
+	// os.CreateTemp already opens 0600 and a umask can only clear bits, never add them, so
+	// this cannot loosen the mode. Set anyway so the file the tool leaves behind has exactly
+	// one documented mode rather than one that depends on the caller's umask.
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp.Name(), p); err != nil {
+		return
+	}
+	renamed = true
 }
 
 // readCache returns the last reading and its age. ok is false when there is nothing usable.
