@@ -1,0 +1,126 @@
+# golangci-lint configuration.
+#
+# Schema v2. The `version` key is not decoration: v1 and v2 have incompatible
+# layouts (v1 put linter settings under a top-level `linters-settings`, v2 nests
+# them under `linters.settings`), and golangci-lint refuses a file whose shape
+# does not match its declared version. Pinned to the same major the CI action
+# installs so `golangci-lint run ./...` locally and in CI cannot disagree.
+version: "2"
+
+linters:
+  # `standard` is errcheck, govet, ineffassign, staticcheck and unused. Listing
+  # them again below would be redundant, so only the additions are named.
+  default: standard
+  enable:
+    # Catches `defer resp.Body.Close()` being forgotten entirely, which for a
+    # tool that polls an HTTP API in a loop is a real leak rather than a style
+    # preference.
+    - bodyclose
+    # This codebase wraps errors with %w and compares them. errorlint catches the
+    # cases that silently stop working: == on a wrapped error, %v where %w was
+    # meant.
+    - errorlint
+    # A CLI that reads credentials off disk and shells out. gosec is worth the
+    # noise here specifically because those are the two things it is good at:
+    # a hardcoded secret (G101) or a disabled TLS check (G402) would be a real
+    # finding. The rules it fires on today are all structural to being a CLI and
+    # are excluded by ID below, each with a reason.
+    - gosec
+    # User-facing help text and error strings are a documented interface. Typos
+    # in them are shipped bugs, not cosmetics.
+    - misspell
+    # Redundant conversions are almost always the residue of a refactor that
+    # changed a type and left the old cast behind.
+    - unconvert
+    # Enabled with no exclusions, which is the whole point. It reported exactly two
+    # things when it was first run here, a missing package comment and a local
+    # `min` shadowing the builtin added in Go 1.21, and both were fixed rather than
+    # excused. Anything it reports from here is therefore new.
+    - revive
+
+  settings:
+    errcheck:
+      # Leave `_ = f()` alone. Assigning to the blank identifier is how a Go
+      # author says "I read this error and I am discarding it on purpose"; making
+      # that an offence removes the only way to express the intent and pushes
+      # people toward deleting the assignment instead, which is worse.
+      check-blank: false
+
+      # Writes to stdout from a CLI's own output path.
+      #
+      # These are the last thing the process does before exiting. There is no
+      # recovery: if stdout is a closed pipe (`claude-runway | head -1`) the
+      # write fails, and the only honest response is to exit, which is what
+      # happens anyway. Checking the error would mean reporting a failed write
+      # to stdout, on stdout. Handling them would be theatre, so they are
+      # excluded here rather than silenced at each call site with `_ =`, which
+      # would put seven pieces of noise in the hot path of reading main.go.
+      #
+      # Note this only covers the writer-taking variants. fmt.Errorf, Sprintf and
+      # friends do not return an error to ignore, and the naked fmt.Print family
+      # is not excluded, because this project does not use it.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+  exclusions:
+    generated: lax
+    rules:
+      # The one deliberate unchecked Close, scoped to the exact line.
+      #
+      # `defer res.Body.Close()` on a response the program has already finished
+      # reading. Close on a drained HTTP response body returns an error only for
+      # conditions the caller cannot act on and does not care about, since the
+      # payload is already in hand. The deferred form has no place to put an
+      # error, and rewriting it into a closure to log one would be strictly more
+      # code for strictly no behaviour.
+      #
+      # Deliberately a path+text rule and not `(io.ReadCloser).Close` in
+      # exclude-functions: this excuses one line, so a future unchecked Close
+      # somewhere else still gets reported.
+      - path: usage\.go
+        linters:
+          - errcheck
+        text: res\.Body\.Close
+
+      # G304, "potential file inclusion via variable". Every hit is os.ReadFile on
+      # a path this tool computed: the cache file, the Claude credentials file, the
+      # install destination. A CLI whose entire job is reading files under $HOME
+      # cannot satisfy this rule without hardcoding paths, and the rule exists to
+      # catch attacker-controlled paths, which these are not.
+      - linters:
+          - gosec
+        text: ^G304
+
+      # G301 (dir 0750) and G306 (file 0600) against install.go. The files written
+      # there are skill markdown installed into ~/.claude/skills or ./.claude/skills
+      # for Claude Code to read. They are documentation, not secrets, and 0644/0755
+      # is what every other file in those directories has. The code that does
+      # handle something sensitive already complies: cache.go writes 0600 into a
+      # 0700 directory, unexcluded, so a regression there would still be caught.
+      - path: install\.go
+        linters:
+          - gosec
+        text: ^G30(1|6)
+
+      # G204 ("subprocess launched with variable") and G306 (file 0600) in test
+      # helpers only. Those tests build the binary and then run it, and shell out
+      # to `bash -n` to syntax-check a generated snippet; the variable is a path
+      # the test itself produced under t.TempDir(). Fixtures they write are
+      # throwaway files in a directory the test runner deletes, so their mode is
+      # not a security property of anything.
+      - path: _test\.go$
+        linters:
+          - gosec
+        text: ^G(204|306)
+
+      # G602, "slice index out of range", at pace.go:160. A false positive:
+      # `best` is initialised to -1 and the only path that reaches `rows[best]`
+      # is guarded by `if best < 0 { ... continue }`, with best assigned solely
+      # from the range index over the same slice. gosec's analysis does not carry
+      # the guard across the continue.
+      - path: pace\.go
+        linters:
+          - gosec
+        text: ^G602
