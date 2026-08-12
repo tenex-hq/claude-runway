@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -90,8 +91,21 @@ func TestUnstampedBuildReportsSomethingReal(t *testing.T) {
 		t.Errorf("unstamped build reported %q with a doubled marker", got)
 	}
 
-	// Only demand real identity when the build had VCS metadata to draw on.
-	inVCS := exec.Command("git", "rev-parse", "--is-inside-work-tree").Run() == nil
+	// Only demand real identity when the build had VCS metadata to draw on. `git rev-parse` is
+	// not sufficient to establish that on its own, which is the second time this test has had
+	// to learn where the toolchain draws the line (the first was the Nix sandbox, above).
+	//
+	// In a linked worktree (`git worktree add`) .git is a file pointing at the real gitdir
+	// rather than a directory, and the Go toolchain does not stamp vcs.revision in that
+	// layout, while rev-parse still answers "true". Measured, not assumed: the same commit
+	// stamps a revision in the main checkout and reports the bare sentinel in a linked
+	// worktree of it. So the probe requires a real .git directory, otherwise this test failed
+	// on unmodified code for anyone developing in a worktree, which is exactly where an agent
+	// working in isolation runs.
+	inVCS := false
+	if st, err := os.Stat(".git"); err == nil && st.IsDir() {
+		inVCS = exec.Command("git", "rev-parse", "--is-inside-work-tree").Run() == nil
+	}
 	if inVCS && got == devVersion {
 		t.Errorf("built inside a git work tree but reported the bare sentinel %q; VCS info was available and unused", got)
 	}
