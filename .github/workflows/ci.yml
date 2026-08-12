@@ -1,0 +1,115 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+# Read-only by default. Nothing in this workflow publishes anything, and a
+# workflow that cannot write cannot be turned into one that does by a compromised
+# action or a malicious dependency in a fork's PR.
+permissions:
+  contents: read
+
+# Pushing three times in a minute should cost one run, not three. CI minutes here
+# are a real budget, so superseded runs on the same ref are cancelled.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # ubuntu only, deliberately. A darwin/windows matrix would triple the minute
+    # spend to test code whose only OS-specific behaviour is path construction,
+    # which the tests already cover with filepath.Join. GoReleaser cross-compiles
+    # all six targets at release time, so a build break on another GOOS still gets
+    # caught before anything ships. This job name is a required status check, so
+    # renaming it silently disables branch protection.
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Read the version from go.mod rather than naming one here, so the
+          # toolchain CI uses and the toolchain the module declares cannot drift
+          # apart silently.
+          go-version-file: go.mod
+          # Off deliberately, not as a workaround. The module cache is keyed on
+          # go.sum, and a project with zero dependencies never has one, so caching
+          # can only ever warn that it found nothing to key on.
+          cache: false
+
+      - name: gofmt
+        # `gofmt -l` lists unformatted files and exits 0 either way, so its exit
+        # code is useless on its own. The -z test turns "listed something" into a
+        # failure, and the offending files are printed so the log says which ones.
+        #
+        # stdout throughout: GitHub parses `::error` out of stdout, and stdout and
+        # stderr are not ordered relative to each other in the log.
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::Not gofmt-clean. Run: gofmt -w ."
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      # -race because the tool fetches usage over HTTP and renders concurrently;
+      # a data race there is exactly the class of bug that reproduces only on a
+      # user's machine.
+      - name: go test
+        run: go test -race -coverprofile=coverage.out ./...
+
+      # The zero-dependency property is advertised in the README, which makes it
+      # something to enforce rather than hope for. `go mod tidy` on a module with
+      # no imports outside the standard library must leave go.mod byte-identical
+      # and must not create a go.sum. If either changes, a dependency crept in.
+      - name: go.mod is tidy and dependency-free
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod
+          if [ -f go.sum ]; then
+            echo "::error file=go.sum::go.sum exists, so this module now has dependencies. That breaks the zero-dependency guarantee the README makes, and the 'cache: false' reasoning in this workflow and in release.yml."
+            exit 1
+          fi
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          # Pinned exactly, not "latest". A floating linter version means a
+          # release of golangci-lint can turn a green main red without anyone
+          # touching this repository. Bump this together with .golangci.yml.
+          version: v2.12.2
+
+      # Validate the release config here rather than discovering it is broken at tag
+      # time. That is not hypothetical: the v0.2.0 release failed after the tag
+      # already existed, and a cosign flag that had been removed upstream would have
+      # failed this config after all six cross-compiles had succeeded. `check` only
+      # parses and validates, it builds nothing, so it costs seconds.
+      - name: goreleaser check
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: "~> v2"
+          args: check
+
+      - name: govulncheck
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          # This action checks out the repo and sets up Go itself. Both already
+          # happened above, so skipping the checkout avoids clobbering the tree.
+          repo-checkout: false
+          # Same reason as setup-go above: no go.sum, nothing to key a cache on.
+          cache: false
+          # With zero dependencies the only thing govulncheck can report is a
+          # vulnerability in the Go standard library or toolchain. That is worth
+          # knowing, and it is the whole value of running it here.
+          go-package: ./...

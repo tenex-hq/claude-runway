@@ -4,3 +4,6 @@
 /dist/
 # Nix build symlink
 /result
+# Coverage profile. CI writes this on every run (`go test -coverprofile=coverage.out`),
+# and CONTRIBUTING tells contributors to run the same command locally.
+/coverage.out

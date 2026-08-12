@@ -1,0 +1,38 @@
+# https://editorconfig.org
+#
+# Small on purpose. gofmt is the authority for .go files and this file must not
+# contradict it, so the Go section only restates what gofmt already enforces
+# (tabs, LF, trailing newline) for the benefit of editors that would otherwise
+# insert spaces before gofmt ever runs.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.go]
+# gofmt indents with tabs and will rewrite anything else, so indent_size here is
+# only about how wide a tab renders. It is not a formatting rule.
+indent_style = tab
+indent_size = 4
+
+[go.mod]
+indent_style = tab
+
+# YAML has no valid tab: the spec forbids tabs in indentation, and GitHub Actions
+# rejects a workflow containing one with a parse error that does not say "tab".
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.{md,nix,json}]
+indent_style = space
+indent_size = 2
+
+# Trailing whitespace is significant in Markdown (two spaces is a hard line
+# break), so stripping it silently changes rendered output.
+[*.md]
+trim_trailing_whitespace = false

@@ -7,20 +7,80 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write # needed to create the GitHub Release
+# Every action below is pinned to a full commit SHA with the version in a trailing
+# comment, not to a floating tag like @v7. This job holds HOMEBREW_TAP_TOKEN, a PAT
+# with write access to a different repository, and a mutable tag is a promise the
+# action's owner can break at any time: whoever controls the tag controls what runs
+# next to that token. A SHA is immutable, so an upstream compromise cannot reach
+# this job retroactively.
+#
+# The cost is that pins go stale. .github/dependabot.yml handles that: Dependabot
+# rewrites the SHA and the version comment together in a reviewable PR, which is
+# the only sustainable way to maintain pinned actions.
+
+permissions: {}
 
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    permissions:
+      # Create the GitHub Release and upload its assets.
+      contents: write
+      # Mint the short-lived GitHub OIDC token that cosign exchanges for a Fulcio
+      # signing certificate, and that actions/attest-build-provenance uses to sign
+      # the provenance statement. Keyless signing is impossible without it.
+      id-token: write
+      # Write the build provenance attestation to this repository's attestation
+      # store, which is what `gh attestation verify` reads.
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # GoReleaser needs the full history and tags to build a changelog and
           # work out the version. A shallow clone makes it fail.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      # flake.nix carries a hand-maintained `version = "X.Y.Z";` that is NOT
+      # derived from the git tag, because a flake has to evaluate from a plain
+      # checkout with no tags present. It has already drifted twice, and the
+      # symptom is quiet: Homebrew and `go install` report the right version while
+      # `nix profile install` reports an older one, on a release that looks
+      # entirely successful.
+      #
+      # This runs before anything is published, so a mismatch costs one red run
+      # and no public artifacts.
+      - name: flake.nix version matches the tag
+        # Everything below writes to stdout, deliberately. GitHub parses `::error`
+        # workflow commands out of a step's stdout, and interleaving of stdout and
+        # stderr in the log is not ordered, which would scramble the instructions
+        # into an unreadable order exactly when someone needs to read them.
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          flake_version="$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' flake.nix | head -1)"
+
+          if [ -z "$flake_version" ]; then
+            echo "::error file=flake.nix::Could not find a 'version = \"X.Y.Z\";' line in flake.nix, so the guard that keeps it in step with the git tag cannot run. Either restore that line or update this step's extraction to match the new shape."
+            exit 1
+          fi
+
+          if [ "$flake_version" != "$tag_version" ]; then
+            echo "::error file=flake.nix::flake.nix says version \"$flake_version\" but tag ${GITHUB_REF_NAME} says \"$tag_version\". Bump flake.nix to $tag_version in the commit the tag points at, then re-tag. See the job log for the exact commands."
+            echo ""
+            echo "Nothing has been published. To fix:"
+            echo "  1. git tag -d ${GITHUB_REF_NAME}"
+            echo "     git push origin :refs/tags/${GITHUB_REF_NAME}"
+            echo "  2. Set  version = \"$tag_version\";  in flake.nix"
+            echo "  3. Commit that bump, push main, then re-create and push the tag."
+            echo ""
+            echo "The bump must be in the commit the tag points at, or one it contains."
+            echo "flake.nix is read from the tagged commit, so fixing main alone changes"
+            echo "nothing for this tag."
+            exit 1
+          fi
+
+          echo "flake.nix and ${GITHUB_REF_NAME} both say $tag_version."
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           # Off deliberately, not as a workaround. The module cache is keyed on
@@ -28,7 +88,43 @@ jobs:
           # can only ever warn that it found nothing to key on.
           cache: false
 
-      - uses: goreleaser/goreleaser-action@v7
+      # vet and test run as their own steps, NOT as GoReleaser before-hooks, and
+      # that placement is the point. Before-hooks execute inside the goreleaser
+      # step, whose env holds HOMEBREW_TAP_TOKEN: a PAT with contents:write on
+      # tenex-hq/homebrew-tap. Anything in the test binary, including every
+      # init() and TestMain, could read that token out of the environment and push
+      # to the tap. Here they run in a step with no secrets at all.
+      #
+      # A failure still aborts the release before anything is published, so
+      # nothing is lost by moving them out.
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      # GoReleaser shells out to `syft` for the sboms block and to `cosign` for
+      # the signs block. goreleaser-action installs neither, and both failures
+      # land late, after the cross-compiles have already succeeded, as a bare
+      # "executable file not found in $PATH". Install them up front.
+      - name: install syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          # Pinned, because this input defaults to "whatever is latest today".
+          # SHA-pinning the action is pointless if the action then downloads an
+          # unpinned binary and runs it over the release artifacts.
+          syft-version: v1.51.0
+
+      # No version input here: cosign-installer bakes the cosign release it
+      # installs into the action itself (v3.0.6 at this SHA) and verifies the
+      # download against a checksum it ships, so pinning the action pins cosign.
+      # Note the major matters. The `signs` block in .goreleaser.yaml uses
+      # `sign-blob --bundle`, which is cosign v3 syntax.
+      - name: install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: goreleaser release
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: "~> v2"
           args: release --clean
@@ -39,3 +135,19 @@ jobs:
           # cask to another one, so without this secret the release will fail at the
           # homebrew step, after the GitHub Release has already been created.
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # Provenance is a different claim from the cosign signature. cosign says
+      # "the holder of this workflow's identity vouches for these checksums";
+      # provenance says "this exact artifact was built by this workflow, from this
+      # commit, on this runner". A consumer checks it with
+      # `gh attestation verify <archive> --repo tenex-hq/claude-runway`, with no
+      # certificate flags to get wrong.
+      #
+      # Runs after GoReleaser because it attests the built files in dist/.
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt

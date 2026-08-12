@@ -4,11 +4,24 @@ version: 2
 
 project_name: claude-runway
 
-before:
-  hooks:
-    - go mod tidy
-    - go vet ./...
-    - go test ./...
+# No `before.hooks`.
+#
+# `go vet`, `go test` and `go mod tidy` used to run here. They were moved into
+# release.yml as their own steps, and this is a security fix rather than tidying:
+# GoReleaser runs before-hooks inside the goreleaser-action step, whose env holds
+# HOMEBREW_TAP_TOKEN. That is a PAT with contents:write on a *different*
+# repository (tenex-hq/homebrew-tap). Anything a hook executes, including every
+# TestMain and every init() in the test binary, can read it out of the
+# environment and push to the tap. Test code is the least reviewed code in the
+# repo, so it is the worst possible place to hand that token.
+#
+# Running them as earlier steps in the job costs nothing (a failure still stops
+# the release before anything is published) and keeps the token's blast radius to
+# the one step that actually needs it. Do not move them back.
+#
+# `go mod tidy` moved to ci.yml as a `go mod tidy && git diff --exit-code go.mod`
+# check, which is the useful half: verifying go.mod is already tidy rather than
+# quietly rewriting it mid-release.
 
 builds:
   - id: claude-runway
@@ -41,6 +54,83 @@ archives:
 
 checksum:
   name_template: checksums.txt
+
+# A software bill of materials per archive, so a consumer can answer "what is in
+# this binary" without unpacking it. For a zero-dependency module the answer is
+# short, and that is the point: the SBOM is the machine-readable proof of the
+# claim the README makes.
+#
+# goreleaser-action does NOT install syft, and GoReleaser does not vendor it. The
+# default `cmd` here is `syft`, so release.yml installs it first via
+# anchore/sbom-action/download-syft. Without that step this block fails with
+# "exec: syft: executable file not found in $PATH", after the builds have already
+# succeeded. Keep the two in sync.
+sboms:
+  - id: archive-sbom
+    # One document per archive, uploaded alongside it as `<archive>.sbom.json`
+    # (GoReleaser's default `documents` template).
+    artifacts: archive
+    # Spelled out rather than left to the default, for one reason: GoReleaser's
+    # default args end in `--enrich all`, which makes syft reach out to online
+    # sources during the release. For a binary whose only inputs are the Go
+    # standard library there is nothing to enrich, so that is a network call that
+    # can only fail. Everything else here is the default.
+    args:
+      - "$artifact"
+      - "--output"
+      - "spdx-json=$document"
+
+# Keyless cosign signature over the checksums file.
+#
+# Signing only checksums.txt, not each archive, is deliberate: checksums.txt
+# already covers every uploaded artifact by sha256, so one signature transitively
+# authenticates all of them. Verified against a snapshot run rather than assumed,
+# because the ordering matters: the sbom step runs before the checksum step, so
+# checksums.txt has twelve entries (six archives and six SBOMs), not six. Signing
+# each of the twelve would mean twelve signatures for no extra assurance.
+#
+# "Keyless" means there is no private key to store or leak. cosign exchanges the
+# job's GitHub OIDC token for a short-lived Fulcio certificate that binds the
+# signature to this workflow file at this tag, and logs it to the Rekor
+# transparency log. It requires `id-token: write` on the job in release.yml.
+#
+# The output is a single Sigstore bundle, not a separate .sig and .pem pair. That
+# is forced, not stylistic: cosign v3 removed --output-signature and
+# --output-certificate from `sign-blob` in favour of --bundle, and
+# sigstore/cosign-installer pins cosign v3. The pre-v3 two-file form fails with
+# "unknown flag: --output-certificate", and it fails inside the goreleaser step
+# after every archive has already been built.
+#
+# A verifier checks it with:
+#
+#   cosign verify-blob \
+#     --bundle checksums.txt.cosign.bundle \
+#     --certificate-identity "https://github.com/tenex-hq/claude-runway/.github/workflows/release.yml@refs/tags/vX.Y.Z" \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     checksums.txt
+#
+# Both --certificate-identity and --certificate-oidc-issuer are required. Without
+# them cosign will happily accept a signature from any identity Fulcio will issue
+# to, which is anyone with a GitHub account, and the check proves nothing. The
+# release footer below carries this command with the tag filled in, because a
+# signature nobody knows how to verify is decoration.
+signs:
+  - id: checksum-cosign
+    cmd: cosign
+    artifacts: checksum
+    # Names the file GoReleaser expects cosign to produce and then uploads. The
+    # ".cosign.bundle" suffix says what it is; ".sig" would be a lie, since the
+    # bundle carries the certificate and Rekor entry as well as the signature.
+    signature: "${artifact}.cosign.bundle"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      # Skips the "this will be logged to a public transparency log, continue?"
+      # prompt. Non-interactive by necessity: there is no tty in Actions, and
+      # without it cosign waits on stdin until the job times out.
+      - "--yes"
+    output: true
 
 changelog:
   use: github
@@ -106,3 +196,28 @@ release:
     go install github.com/tenex-hq/claude-runway@{{ .Tag }}
     nix profile install github:tenex-hq/claude-runway/{{ .Tag }}
     ```
+
+    ## Verify
+
+    `checksums.txt` covers every archive, and it is signed keyless with cosign, so
+    verifying it verifies the whole release. Both `--certificate-identity` and
+    `--certificate-oidc-issuer` are required: without them cosign accepts a
+    signature from any GitHub identity and the check proves nothing.
+
+    ```bash
+    cosign verify-blob \
+      --bundle checksums.txt.cosign.bundle \
+      --certificate-identity "https://github.com/tenex-hq/claude-runway/.github/workflows/release.yml@refs/tags/{{ .Tag }}" \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      checksums.txt
+    sha256sum --check --ignore-missing checksums.txt
+    ```
+
+    Every archive also carries a GitHub build provenance attestation, which says
+    which workflow, commit and runner produced it:
+
+    ```bash
+    gh attestation verify claude-runway_*.tar.gz --repo tenex-hq/claude-runway
+    ```
+
+    Each archive ships an SPDX SBOM next to it as `<archive>.sbom.json`.

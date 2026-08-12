@@ -1,0 +1,43 @@
+version: 2
+
+# There is deliberately NO `gomod` entry.
+#
+# This module has zero dependencies. go.mod lists only the module path and the Go
+# version, there is no go.sum, and ci.yml enforces both (a `go mod tidy` diff plus
+# a check that no go.sum appeared). Dependabot's gomod ecosystem would therefore
+# have nothing to resolve and would only ever produce empty runs.
+#
+# The zero-dependency property is a feature the README advertises, not an
+# accident of a young project. If you find yourself wanting a gomod entry here,
+# the thing to question is the dependency, not this omission.
+#
+# The Go toolchain version in go.mod is likewise not Dependabot's job: CI reads it
+# via `go-version-file: go.mod`, so bumping it is a deliberate one-line change.
+
+updates:
+  # GitHub Actions is the one ecosystem here that genuinely rots, and now the one
+  # that most needs automation: every action in release.yml and ci.yml is pinned
+  # to a full commit SHA. Maintaining those by hand means resolving tags to SHAs
+  # with `gh api` on every bump, which nobody keeps doing. Dependabot rewrites the
+  # SHA and the trailing version comment together, which makes SHA pinning
+  # sustainable instead of a one-off gesture.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Weekly, not daily. Actions churn enough that daily would train everyone to
+    # ignore the PRs, and the security case for pinning is about an attacker
+    # moving a tag, which pinning already defeats regardless of how fresh the pin
+    # is.
+    open-pull-requests-limit: 5
+    # The changelog filters in .goreleaser.yaml drop "^chore:", so these bumps stay
+    # out of release notes without needing a second exclusion list.
+    commit-message:
+      prefix: "chore"
+    groups:
+      # One PR for all of them. These are reviewed as a set ("did any upstream do
+      # something surprising"), and five separate PRs each needing a full CI run
+      # is a poor use of a limited minute budget.
+      actions:
+        patterns:
+          - "*"
