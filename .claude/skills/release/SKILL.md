@@ -127,14 +127,32 @@ public, and re-tagging the same version is the one thing to avoid.
    `cosign` signing is keyless and needs a GitHub OIDC token, so it only ever really runs in
    Actions. A local run of that stage would prompt for a browser login.
 
-4. **Commit the version bump**, then tag and push:
+4. **Land the version bump on `main` through a pull request**, then tag what landed.
+
+   `main` is protected: it requires a pull request and a green `check` status. Admins are not
+   enforced, so a direct `git push origin main` would succeed, and that is exactly why this
+   says not to. CONTRIBUTING.md tells contributors that changes never land by direct push, and
+   the release path is the worst place for the maintainer to be seen doing otherwise.
+
    ```bash
+   git checkout -b chore/vX.Y.Z
    git add flake.nix && git commit -m "chore: v X.Y.Z"   # no space in the real message
-   git push origin main
+   git push -u origin chore/vX.Y.Z
+   gh pr create --title "chore: vX.Y.Z" --body "Version bump for vX.Y.Z." --base main
+   gh pr merge --rebase --delete-branch    # waits for the required check
+   ```
+
+   Then tag the commit that actually landed, not your local one. `main` is rebase-merge only
+   (linear history is required), so the merged commit has a **different SHA** than the one you
+   pushed. Tagging the local commit would tag an object that is not on `main`, and the flake
+   guard reads `flake.nix` from the tagged commit:
+
+   ```bash
+   git checkout main && git fetch origin && git reset --hard origin/main
+   grep -n 'version = ' flake.nix        # confirm it says X.Y.Z before tagging
    git tag -a vX.Y.Z -m "vX.Y.Z"
    git push origin vX.Y.Z
    ```
-   Push the branch before the tag, so the tag points at a commit that exists on the remote.
 
 5. **Watch the run**, do not assume it passed:
    ```bash
