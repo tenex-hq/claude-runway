@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -22,6 +23,13 @@ import (
 // argument list (see usage.go for how it reaches curl).
 
 const keychainService = "Claude Code-credentials"
+
+// A local Keychain read either answers in milliseconds or it is not going to answer at all.
+// The way it hangs is macOS deciding to raise an unlock dialog, at which point `security`
+// sits there until a human clicks a button. Waiting on a human is the one thing this tool
+// must never do: its whole purpose is to answer fast enough to live inside an agent's work
+// loop. Three seconds is already generous for reading a local file-backed keychain.
+const keychainTimeout = 3 * time.Second
 
 type credentials struct {
 	token     string
@@ -84,11 +92,15 @@ func fromKeychain() (credentials, bool) {
 	if runtime.GOOS != "darwin" {
 		return credentials{}, false
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
 	// -w prints only the secret, which lands in this process's memory. Stderr is
 	// discarded so a locked keychain cannot leak a prompt into our output.
-	cmd := exec.Command("security", "find-generic-password", "-s", keychainService, "-w")
+	cmd := exec.CommandContext(ctx, "security", "find-generic-password", "-s", keychainService, "-w")
 	out, err := cmd.Output()
 	if err != nil {
+		// A timeout arrives here as a kill and needs no branch of its own: every way of
+		// failing to read the keychain is already reported the same way, as nothing found.
 		return credentials{}, false
 	}
 	return parseCredentials([]byte(strings.TrimSpace(string(out))), "keychain")
