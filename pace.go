@@ -145,10 +145,9 @@ type overall struct {
 	reason   string
 }
 
-// summarize picks the window that will bite first and turns it into a single verdict.
-// "Tightest" is by pace headroom when known, because a window with plenty of percent
-// left but very little time left is the one that runs dry: raw percentage alone hides
-// that. Falls back to lowest percent remaining when no pace could be computed.
+// summarize prioritizes windows at the stop threshold, then compares pace headroom
+// when known. A nearly exhausted window must stop work even if it resets soon or its
+// reset time is unknown. Falls back to lowest percent remaining when no pace is known.
 func summarize(rows []row) (overall, bool) {
 	best := -1
 	for i, r := range rows {
@@ -160,6 +159,12 @@ func summarize(rows []row) (overall, bool) {
 			continue
 		}
 		b := rows[best]
+		if (r.left <= stopBelow) != (b.left <= stopBelow) {
+			if r.left <= stopBelow {
+				best = i
+			}
+			continue
+		}
 		if r.paceOK && b.paceOK {
 			if r.pace.headroomPts < b.pace.headroomPts {
 				best = i

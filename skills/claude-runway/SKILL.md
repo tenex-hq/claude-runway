@@ -41,9 +41,9 @@ inverts every decision.
 | `not-applicable` | A custom provider is configured; there is no subscription window | Proceed with no budget gate at all |
 | `unknown` | Windows returned without usable numbers | Do not guess. Treat as "no reading" |
 
-`tightest` names the window that decided the verdict, and it is chosen by pace headroom
-rather than by lowest percentage: a window with plenty of percent left but very little time
-left is the one that actually runs dry.
+`tightest` names the window that decided the verdict. A window with 5% or less remaining
+takes priority, even if its reset is near or unknown. Otherwise, pace headroom takes
+precedence: a window with more budget left can still have much more time to cover.
 
 **`pace` and `headroom_pts`** compare budget left against time left in the window. Positive
 headroom means the remaining budget more than covers the remaining time, so you are safe to
