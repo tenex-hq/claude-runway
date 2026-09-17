@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,42 @@ func TestSummarizePrefersJudgeableWindow(t *testing.T) {
 	got, _ := summarize(rows)
 	if got.tightest != "weekly" {
 		t.Errorf("tightest = %q, want weekly: a window we can judge beats one we cannot", got.tightest)
+	}
+}
+
+func TestSummarizeStopWindowCannotBeHidden(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		left         int
+		wantVerdict  string
+		wantTightest string
+	}{
+		{0, "stop", "session_5h"},
+		{5, "stop", "session_5h"},
+		{6, "safe", "weekly"},
+	}
+	for _, c := range cases {
+		for _, withReset := range []bool{false, true} {
+			for _, reverse := range []bool{false, true} {
+				t.Run(fmt.Sprintf("left=%d/reset=%t/reverse=%t", c.left, withReset, reverse), func(t *testing.T) {
+					limited := row{label: "session_5h", left: c.left, leftOK: true}
+					if withReset {
+						limited.resetsAt = now.Add(time.Minute)
+						limited.pace, limited.paceOK = pace(c.left, true, limited.resetsAt, fiveH, now)
+					}
+					healthyPace, healthyOK := pace(75, true, now.Add(6*24*time.Hour), 7*24*time.Hour, now)
+					healthy := row{label: "weekly", left: 75, leftOK: true, pace: healthyPace, paceOK: healthyOK}
+					rows := []row{{label: "unknown"}, limited, healthy}
+					if reverse {
+						rows[0], rows[2] = rows[2], rows[0]
+					}
+					got, ok := summarize(rows)
+					if !ok || got.verdict != c.wantVerdict || got.tightest != c.wantTightest {
+						t.Errorf("summarize = %+v, %v; want %s from %s", got, ok, c.wantVerdict, c.wantTightest)
+					}
+				})
+			}
+		}
 	}
 }
 

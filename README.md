@@ -172,9 +172,9 @@ different question. There is no free lunch here.
 - **verdict** (`safe`, `caution`, `stop`) combines the windows so the caller does not have to.
   `tightest` names the window that decided it.
 
-`tightest` is chosen by pace headroom, not by lowest percentage. A window with plenty of
-percent left but very little time left is the one that runs dry, and a raw percentage hides
-that.
+Any window with 5% or less remaining takes priority and produces `stop`, even if its reset
+is near or unknown. Otherwise, `tightest` is chosen by pace headroom when available: a window
+with more budget left can still be the constraint if it has much more time to cover.
 
 ## Caching, and why it is not optional
 
