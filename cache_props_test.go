@@ -107,7 +107,7 @@ func TestWriteCacheLeavesNoTempFileBehind(t *testing.T) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatalf("published cache file does not parse, so it was published torn: %v\n%s", err, raw)
 	}
-	if f.Version != 1 || len(f.Buckets) != 2 {
+	if f.Version != cacheVersion || len(f.Buckets) != 2 {
 		t.Errorf("published cache file is incomplete: %+v", f)
 	}
 	if f.Buckets[0].Utilization == nil || *f.Buckets[0].Utilization != 40 {
@@ -153,7 +153,7 @@ func TestUnusableCacheFileIsIgnored(t *testing.T) {
 	cases := []struct{ name, body string }{
 		{"not json", `{ this is not json`},
 		{"a different schema version", `{"version":99,"fetched_at":"2026-08-10T12:00:00Z","buckets":[{"key":"five_hour"}]}`},
-		{"no buckets", `{"version":1,"fetched_at":"2026-08-10T12:00:00Z","buckets":[]}`},
+		{"no buckets", `{"version":2,"fetched_at":"2026-08-10T12:00:00Z","buckets":[]}`},
 		{"empty file", ``},
 	}
 	for _, c := range cases {

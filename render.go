@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -36,11 +37,7 @@ func buildRows(r reading, now time.Time) []row {
 			label = b.key
 		}
 		left, leftOK := percentLeft(b.utilization, b.hasUtil)
-		window := windowLen[b.key]
-		if window == 0 {
-			window = windowLen["seven_day"]
-		}
-		p, pOK := pace(left, leftOK, b.resetsAt, window, now)
+		p, pOK := pace(left, leftOK, b.resetsAt, windowPeriod(b.key), now)
 		rows = append(rows, row{
 			key: b.key, label: label, left: left, leftOK: leftOK,
 			pace: p, paceOK: pOK, resetsAt: b.resetsAt,
@@ -165,6 +162,9 @@ func renderTOON(r reading, now time.Time, o renderOpts) string {
 		// than printing a table of "unknown" with no verdict.
 		b.WriteString("verdict: unknown\nbecause: the endpoint returned windows without usable numbers\n")
 	}
+	if c := r.credits; c != nil {
+		fmt.Fprintf(&b, "credits: %s\n", creditsLine(c))
+	}
 
 	fields := o.fields
 	if len(fields) == 0 {
@@ -185,6 +185,21 @@ func renderTOON(r reading, now time.Time, o renderOpts) string {
 		b.WriteString("  Run `claude-runway --fields=window,left_pct,resets_at` to pick columns; see --help for the full list\n")
 	}
 	return b.String()
+}
+
+// creditsLine states the reserve status in the line itself, because an agent reads --brief
+// without the docs. "credits: 100% left" directly under "verdict: stop" reads as permission to
+// carry on, and credits are a paid reserve the user keeps for time-sensitive work, so the line
+// says it is not budget and not part of the verdict before an agent can draw that conclusion.
+func creditsLine(c *credits) string {
+	return fmt.Sprintf("reserve, %d%% left (%s of %s %s used), not budget and not part of the verdict",
+		c.percentLeft, fmtAmount(c.used, c.decimals), fmtAmount(c.limit, c.decimals), c.currency)
+}
+
+// fmtAmount prints exactly the currency's decimal places, so 21.5 EUR reads 21.50 the way
+// /usage shows it, and float noise cannot add a fifteenth digit.
+func fmtAmount(v float64, decimals int) string {
+	return strconv.FormatFloat(v, 'f', decimals, 64)
 }
 
 // --- failures ----------------------------------------------------------------------
@@ -284,6 +299,18 @@ type jsonWindow struct {
 	} `json:"pace"`
 }
 
+// jsonCredits key names are a contract for callers parsing --json; renaming one breaks them.
+// used and limit are json.Number so they carry the currency's decimal places (21.50, not
+// 21.5) and stay numbers rather than strings.
+type jsonCredits struct {
+	Enabled     bool        `json:"enabled"`
+	Used        json.Number `json:"used"`
+	Limit       json.Number `json:"limit"`
+	Currency    string      `json:"currency"`
+	PercentLeft int         `json:"percent_left"`
+	Severity    string      `json:"severity"`
+}
+
 type jsonOut struct {
 	Status    string       `json:"status"`
 	Reason    string       `json:"reason,omitempty"`
@@ -300,6 +327,9 @@ type jsonOut struct {
 	CredFrom  string       `json:"credential_source,omitempty"`
 	Plan      string       `json:"plan,omitempty"`
 	Windows   []jsonWindow `json:"windows,omitempty"`
+	// Absent, not zeroed, when credits are off or unreadable: a 0 here would say "reserve
+	// spent" when the truth is "no reserve to report".
+	Credits *jsonCredits `json:"credits,omitempty"`
 }
 
 func renderJSON(r reading, now time.Time) string {
@@ -351,6 +381,16 @@ func renderJSON(r reading, now time.Time) string {
 				}{w.pace.label, w.pace.headroomPts}
 			}
 			out.Windows = append(out.Windows, jw)
+		}
+		if c := r.credits; c != nil {
+			out.Credits = &jsonCredits{
+				Enabled:     true,
+				Used:        json.Number(fmtAmount(c.used, c.decimals)),
+				Limit:       json.Number(fmtAmount(c.limit, c.decimals)),
+				Currency:    c.currency,
+				PercentLeft: c.percentLeft,
+				Severity:    c.severity,
+			}
 		}
 	}
 	// Indented: this is read by humans debugging and by hosts parsing, and the size
