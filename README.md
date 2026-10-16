@@ -176,6 +176,70 @@ Any window with 5% or less remaining takes priority and produces `stop`, even if
 is near or unknown. Otherwise, `tightest` is chosen by pace headroom when available: a window
 with more budget left can still be the constraint if it has much more time to cover.
 
+### Per-model weekly windows
+
+Some plans meter a model on its own weekly window next to the overall one, and `/usage` shows
+it as a separate meter. The endpoint reports these only as `weekly_scoped` entries in its
+`limits` array, with no top-level key, so they appear as `weekly_<model>` rows named from the
+model's display name (lowercase, anything outside `a-z0-9` replaced by `_`), so Fable
+becomes `weekly_fable`. They get their own reset, pace (against seven days) and severity, and they
+take part in `verdict` and `tightest` like any other window, because running one out stops
+work on that model. A model that already has a top-level window (`seven_day_opus`, reported
+as `weekly_opus`) is not listed twice.
+
+### Usage credits are a reserve, not budget
+
+When usage credits are enabled on the account, the reading carries them next to the windows:
+
+```console
+$ claude-runway --brief
+source: live
+verdict: stop
+tightest: weekly
+because: weekly has 3% left
+credits: reserve, 0% left (21.50 of 20.00 EUR used), not budget and not part of the verdict
+windows[3]{window,left_pct,resets_in,pace,headroom_pts}:
+  session_5h,80,2h,well-ahead,+40
+  weekly,3,4d,burning-fast,-54
+  weekly_fable,100,4d,well-ahead,+43
+```
+
+Credits are a paid reserve the user keeps for strictly time-sensitive work. They are reported
+so the user can see them, and they never change `verdict` or `tightest`. Read the two
+together like this:
+
+- `stop` means stop, whether credits show 100% left or 0%. A full reserve is not permission
+  to keep going.
+- An agent continues on credits only when the user has explicitly authorized that for the
+  task at hand. Nothing in the output grants it.
+- With credits at 0% left the reserve is spent too, so a window at `stop` cannot be bridged
+  even with that authorization.
+
+The `--json` form adds a top-level object:
+
+```json
+"credits": {
+  "enabled": true,
+  "used": 21.50,
+  "limit": 20.00,
+  "currency": "EUR",
+  "percent_left": 0,
+  "severity": "critical"
+}
+```
+
+`used` and `limit` are in major currency units with the currency's decimal places.
+`percent_left` is clamped to 0..100, so spending past the limit reads 0. `severity` is the
+endpoint's own value, or `unknown` when the reading came from the older `extra_usage` shape,
+which has none. The object is read from `spend`, falling back to `extra_usage` when `spend` is
+missing, and is **omitted entirely** when credits are off or the numbers are incomplete:
+there is no zero that means "unknown". MCP `check_usage` returns the same `credits:` line as
+`--brief`.
+
+No credits reset time is reported, because the payload has none. The "Resets Nov 1" on
+`/usage` is probably derived on the client, which is unconfirmed. `spend_limit_reached` is
+ignored as well: it read `false` on a payload where used already exceeded the limit.
+
 ## Caching, and why it is not optional
 
 The usage endpoint **rate-limits reads with HTTP 429**, and it is strict. Measured against
@@ -215,9 +279,11 @@ A 429 also gets its own wording, because "429" read as "budget exhausted" would 
 stop working for no reason. The message says explicitly that the limit hit was on reading the
 meter, not on the subscription.
 
-The cache lives in the user cache dir (`~/Library/Caches/claude-runway` on macOS), mode 0600,
-holds only derived numbers, and is written atomically. **No token is ever written to it**, and
-a test asserts that.
+The cache lives in the user cache dir (`~/Library/Caches/claude-runway` on macOS) with mode
+0600 and is written atomically. It holds only derived numbers, with credits stored as
+major-unit amounts. **No token is ever written to it**, and a test asserts that. A file written under
+a different schema `version` is ignored and replaced on the next live read, so an upgrade
+never reads an old file as if it had no credits.
 
 ## How it works
 
@@ -227,7 +293,8 @@ a test asserts that.
    Claude Code.
 2. Calls `GET https://api.anthropic.com/api/oauth/usage`. The response carries `five_hour`,
    `seven_day` and sometimes `seven_day_opus`, each with `utilization` (0..100) and
-   `resets_at`.
+   `resets_at`, plus a `limits` array that holds severity and the per-model
+   `weekly_scoped` windows, and `spend` and `extra_usage` for usage credits.
 3. Uses Go's `net/http`, with a fallback to the system `curl`. Node-based clients are
    reported to hit `403 "Request not allowed"` from TLS fingerprinting; Go's client is not
    affected on the networks this was tested on, and both paths were verified to return 200.
@@ -303,15 +370,17 @@ On an M-series Mac, `darwin/arm64`:
 go test -race ./...
 ```
 
-90 tests, 89% statement coverage, about 3 seconds. Tests assert behavioural contracts rather
+108 tests, 90% statement coverage, about 4 seconds. Tests assert behavioural contracts rather
 than implementation, so the names read as guarantees:
 `TestFailuresNeverRenderNumbers`, `TestCacheHoldsNoSecret`,
 `TestRateLimitOnTheMeterIsNotBudgetExhaustion`, `TestDoctorNeverPrintsTheToken`,
 `TestCustomProviderSendsNoRequestAtAll`, `TestTokenReachesCurlOnStdinAndNeverInArgv`.
 
 Covered: the pace math and the verdict's tie-breaking; payload parsing including the
-empty-window case; the cache round trip, its 0600 mode, its refusal of ancient or future
-readings, and that it leaves no temp file behind; the guarantee that no failure ever renders
+empty-window case, scoped weekly windows and their de-duplication, and every credits source;
+the guarantee that credits never change the verdict; the cache round trip, its 0600 mode, its
+refusal of ancient or future readings and of an older schema version, and that it leaves no
+temp file behind; the guarantee that no failure ever renders
 something mistakable for a percentage; the stale-fallback labelling; credential parsing,
 including the subtlety that a missing expiry means *unknown* rather than expired; CLI exit
 codes and stderr silence; and the MCP protocol.

@@ -37,13 +37,28 @@ inverts every decision.
 |---|---|---|
 | `safe` | Budget comfortably covers the time to reset | Proceed |
 | `caution` | Under 20% left, or burning much faster than the clock | Finish current work, commit it, avoid starting anything large |
-| `stop` | 5% or less left on some window | Stop, commit, and tell the user which window and when it resets |
+| `stop` | 5% or less left on some window | Stop, commit, and tell the user which window and when it resets. This holds even when the `credits:` line shows credits left |
 | `not-applicable` | A custom provider is configured; there is no subscription window | Proceed with no budget gate at all |
 | `unknown` | Windows returned without usable numbers | Do not guess. Treat as "no reading" |
+
+**Usage credits are the user's reserve, and you may not spend them on your own.** A
+`credits:` line (or a `credits` object in `--json`) reports paid usage credits the user keeps
+for strictly time-sensitive work. It is there so the user can see it. It is not part of the
+verdict and never changes it:
+
+- `stop` means stop, whether credits show 100% left or 0%.
+- Do not continue on credits unless the user explicitly authorized that for this task. A full
+  reserve is not that authorization, and neither is anything else in the output.
+- With credits at 0% left the reserve is spent as well, so even an authorized task cannot go
+  on past a `stop`.
+- When you stop on a window and credits remain, tell the user. Spending them is their call.
 
 `tightest` names the window that decided the verdict. A window with 5% or less remaining
 takes priority, even if its reset is near or unknown. Otherwise, pace headroom takes
 precedence: a window with more budget left can still have much more time to cover.
+
+**Per-model windows** such as `weekly_fable` are weekly windows for one model. They count
+toward the verdict like `weekly` does: running one out stops work on that model.
 
 **`pace` and `headroom_pts`** compare budget left against time left in the window. Positive
 headroom means the remaining budget more than covers the remaining time, so you are safe to
@@ -158,3 +173,7 @@ error such as an unknown flag.
 
 Lead with the decision, not the table. "Weekly is at 73% with 5 days left, on pace, so I will
 keep going" is useful. Pasting the raw output is not, unless they asked for the numbers.
+
+On a stop, mention credits when the line is there, and leave the choice to the user: "Weekly
+is at 3%, so I have stopped. You still have 60% of your usage credits if this is urgent enough
+to spend them."
