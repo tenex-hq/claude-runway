@@ -33,6 +33,22 @@ const (
 	cacheMaxStale = 6 * time.Hour   // beyond this, a stale reading is misleading, not useful
 )
 
+// cacheVersion is bumped whenever the file's meaning changes, and readCache treats any other
+// version as no cache at all, so the next live read simply overwrites it. Version 2 added
+// credits and scoped weekly windows. A version 1 file has neither, and read as version 2 its
+// missing credits would look like "credits disabled" for up to cacheMaxStale.
+const cacheVersion = 2
+
+// cachedCredits holds major-unit amounts as derived by parseCredits, never the payload.
+type cachedCredits struct {
+	Used        float64 `json:"used"`
+	Limit       float64 `json:"limit"`
+	Decimals    int     `json:"decimals"`
+	Currency    string  `json:"currency"`
+	PercentLeft int     `json:"percent_left"`
+	Severity    string  `json:"severity"`
+}
+
 type cachedBucket struct {
 	Key         string     `json:"key"`
 	Utilization *float64   `json:"utilization"`
@@ -47,6 +63,7 @@ type cacheFile struct {
 	CredFrom  string         `json:"credential_source"`
 	Plan      string         `json:"plan"`
 	Buckets   []cachedBucket `json:"buckets"`
+	Credits   *cachedCredits `json:"credits,omitempty"`
 }
 
 func cachePath() string {
@@ -112,7 +129,11 @@ func writeCache(r reading) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return
 	}
-	f := cacheFile{Version: 1, FetchedAt: r.fetchedAt, Transport: r.transport, CredFrom: r.credSource, Plan: r.plan}
+	f := cacheFile{Version: cacheVersion, FetchedAt: r.fetchedAt, Transport: r.transport, CredFrom: r.credSource, Plan: r.plan}
+	if c := r.credits; c != nil {
+		f.Credits = &cachedCredits{Used: c.used, Limit: c.limit, Decimals: c.decimals, Currency: c.currency,
+			PercentLeft: c.percentLeft, Severity: c.severity}
+	}
 	for _, b := range r.buckets {
 		cb := cachedBucket{Key: b.key, Severity: b.severity}
 		if b.hasUtil {
@@ -181,7 +202,7 @@ func readCache() (reading, time.Duration, bool) {
 		return reading{}, 0, false
 	}
 	var f cacheFile
-	if err := json.Unmarshal(raw, &f); err != nil || f.Version != 1 || len(f.Buckets) == 0 {
+	if err := json.Unmarshal(raw, &f); err != nil || f.Version != cacheVersion || len(f.Buckets) == 0 {
 		return reading{}, 0, false
 	}
 	age := time.Since(f.FetchedAt)
@@ -199,6 +220,10 @@ func readCache() (reading, time.Duration, bool) {
 			b.resetsAt = *cb.ResetsAt
 		}
 		r.buckets = append(r.buckets, b)
+	}
+	if c := f.Credits; c != nil {
+		r.credits = &credits{used: c.Used, limit: c.Limit, decimals: c.Decimals, currency: c.Currency,
+			percentLeft: c.PercentLeft, severity: c.Severity}
 	}
 	return r, age, true
 }

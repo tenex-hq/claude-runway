@@ -17,6 +17,22 @@ var windowLen = map[string]time.Duration{
 	"seven_day_opus": 7 * 24 * time.Hour,
 }
 
+// weekly_scoped entries in limits carry a reset time but no period. They are weekly by kind
+// and reset on the same 7-day cadence as seven_day, so pace is judged against seven days.
+// Without a period pace has nothing to divide by, and a per-model window that may be the one
+// about to stop work would sit in the table with no pace at all.
+const scopedWindowLen = 7 * 24 * time.Hour
+
+// windowPeriod resolves a bucket key to its window length. Every key that is not a top-level
+// endpoint field is a scoped weekly window, since parsePayload produces no other kind and the
+// cache stores only keys it was given.
+func windowPeriod(key string) time.Duration {
+	if d, ok := windowLen[key]; ok {
+		return d
+	}
+	return scopedWindowLen
+}
+
 // Short names used in output.
 var windowLabel = map[string]string{
 	"five_hour":      "session_5h",

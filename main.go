@@ -70,6 +70,10 @@ Percentages are REMAINING: 100 means untouched, 0 means exhausted. Pace compares
 left against time left in the window, so positive headroom means you are safe to push.
 The verdict (safe, caution, stop) already combines the windows.
 
+When usage credits are enabled, a credits: line follows the verdict. Credits are a paid
+reserve the user keeps for time-sensitive work. They are not part of the verdict, an
+agent may not spend them as budget, and stop means stop whatever they show.
+
 Readings are cached for 5 minutes, because the usage endpoint rate-limits repeated calls
 with HTTP 429 and took 120s to recover when measured. That makes a per-iteration budget
 check safe. When a live read fails, the last reading is served instead, labelled with its

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -109,6 +110,8 @@ type reading struct {
 	credSource string
 	plan       string
 	fetchedAt  time.Time
+	// nil when credits are absent, disabled or unreadable. Never a zero-valued stand-in.
+	credits *credits
 
 	// Set when the numbers came from the on-disk cache rather than the network. `stale`
 	// distinguishes the two reasons that happens: a deliberate hit inside the TTL, versus a
@@ -247,11 +250,20 @@ func viaCurl(token string) httpResult {
 
 // --- parsing ---------------------------------------------------------------------
 
+type limitEntry struct {
+	Kind     string   `json:"kind"`
+	Severity string   `json:"severity"`
+	Percent  *float64 `json:"percent"`
+	ResetsAt string   `json:"resets_at"`
+	Scope    *struct {
+		Model *struct {
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+	} `json:"scope"`
+}
+
 type usagePayload struct {
-	Limits []struct {
-		Kind     string `json:"kind"`
-		Severity string `json:"severity"`
-	} `json:"limits"`
+	Limits []limitEntry `json:"limits"`
 	// Windows are decoded generically so an added window does not require a code change
 	// to be visible, and so a changed shape degrades to "unknown" instead of a crash.
 	Raw map[string]json.RawMessage `json:"-"`
@@ -269,16 +281,23 @@ func parsePayload(body []byte) ([]bucket, string, bool) {
 	}
 	var meta usagePayload
 	_ = json.Unmarshal(body, &meta) // limits are a bonus; absence is not an error
-	severity := func(kind string) string {
+	severity := func(kind string) (string, bool) {
 		for _, l := range meta.Limits {
 			if l.Kind == kind {
-				return l.Severity
+				return l.Severity, true
 			}
 		}
-		return "normal"
+		return "normal", false
 	}
 
 	var out []bucket
+	// Label to index in out, plus whether that window's severity came from a limits entry of
+	// its own, so a scoped entry for the same model can be merged rather than repeated.
+	type seen struct {
+		i        int
+		sevFound bool
+	}
+	byLabel := map[string]seen{}
 	for _, key := range bucketKeys {
 		rawWindow, present := raw[key]
 		if !present {
@@ -295,16 +314,56 @@ func parsePayload(body []byte) ([]bucket, string, bool) {
 		if w.Utilization == nil && w.ResetsAt == "" {
 			continue
 		}
-		b := bucket{key: key, severity: severity(kindByKey[key])}
+		sev, found := severity(kindByKey[key])
+		b := bucket{key: key, severity: sev}
 		if w.Utilization != nil {
 			b.utilization, b.hasUtil = *w.Utilization, true
 		}
-		if w.ResetsAt != "" {
-			if t, err := time.Parse(time.RFC3339, w.ResetsAt); err == nil {
-				b.resetsAt = t
-			}
-		}
+		b.resetsAt = parseResetsAt(w.ResetsAt)
+		byLabel[windowLabel[key]] = seen{len(out), found}
 		out = append(out, b)
+	}
+
+	// Per-model weekly windows. The Fable window on /usage has no top-level key at all: it
+	// exists only as a weekly_scoped entry in limits, so reading bucketKeys alone reported
+	// session_5h and weekly while /usage showed a third meter that can stop work on its own.
+	for _, l := range meta.Limits {
+		if l.Kind != "weekly_scoped" || l.Scope == nil || l.Scope.Model == nil {
+			continue
+		}
+		name := scopedWindowName(l.Scope.Model.DisplayName)
+		if name == "" {
+			continue
+		}
+		label := "weekly_" + name
+		if prev, dup := byLabel[label]; dup {
+			p := &out[prev.i]
+			if _, topLevel := windowLabel[p.key]; topLevel {
+				// seven_day_opus already reports this model as weekly_opus, so a second row
+				// would count one meter twice. Its severity is still worth taking: the
+				// top-level key looks for a limits kind of weekly_opus, and when the only
+				// entry for that model is weekly_scoped it would otherwise report the
+				// "normal" fallback whatever the entry said.
+				if !prev.sevFound && l.Severity != "" {
+					p.severity = l.Severity
+				}
+				continue
+			}
+			// Two scoped entries resolving to one name (scope also has a surface field that
+			// nothing here distinguishes). Keep the more consumed one: a gate shown the
+			// looser of two windows with the same name would say safe while the other stops.
+			if l.Percent != nil && (!p.hasUtil || *l.Percent > p.utilization) {
+				*p = scopedBucket(label, l)
+			}
+			continue
+		}
+		// Same rule as an empty top-level window: no number and no reset is a row of
+		// "unknown" for a limit that may not apply, which reads like a failed lookup.
+		if l.Percent == nil && l.ResetsAt == "" {
+			continue
+		}
+		byLabel[label] = seen{len(out), true}
+		out = append(out, scopedBucket(label, l))
 	}
 	if len(out) == 0 {
 		keys := make([]string, 0, len(raw))
@@ -324,6 +383,180 @@ func parsePayload(body []byte) ([]bucket, string, bool) {
 		return nil, clipDetail(strings.Join(keys, " ")) + more, false
 	}
 	return out, "", true
+}
+
+func parseResetsAt(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// scopedBucket keys the window by its output label. A scoped window has no endpoint field
+// name to key it by, and the cache stores only the key, so the label is what survives a
+// round trip through it.
+func scopedBucket(label string, l limitEntry) bucket {
+	b := bucket{key: label, severity: l.Severity, resetsAt: parseResetsAt(l.ResetsAt)}
+	if l.Percent != nil {
+		b.utilization, b.hasUtil = *l.Percent, true
+	}
+	return b
+}
+
+// scopedWindowName turns a model display name into the suffix of a window label: lowercase,
+// with everything outside ASCII a-z and 0-9 replaced by "_" ("Fable" becomes "fable"). ASCII
+// only on purpose, because the label lands unquoted in a comma-separated TOON row, where a
+// comma or a space from a display name would shift every column after it.
+func scopedWindowName(display string) string {
+	display = strings.ToLower(strings.TrimSpace(display))
+	var b strings.Builder
+	for _, r := range display {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// --- credits ---------------------------------------------------------------------
+// Usage credits are a paid reserve the user keeps for time-sensitive work, not budget an agent
+// may spend. They are read so the user can see them, and kept out of the windows on purpose:
+// as a row they would take part in verdict and tightest, and a reserve with 100% left would
+// then be able to make an exhausted plan look safe.
+
+// credits holds major-unit amounts. decimals is the currency exponent, kept so 21.50 renders
+// as 21.50 and not 21.5.
+type credits struct {
+	used        float64
+	limit       float64
+	decimals    int
+	currency    string
+	percentLeft int
+	severity    string
+}
+
+type moneyPayload struct {
+	AmountMinor *float64 `json:"amount_minor"`
+	Currency    string   `json:"currency"`
+	Exponent    *int     `json:"exponent"`
+}
+
+type spendPayload struct {
+	Used     *moneyPayload `json:"used"`
+	Limit    *moneyPayload `json:"limit"`
+	Severity string        `json:"severity"`
+	Enabled  *bool         `json:"enabled"`
+}
+
+type extraUsagePayload struct {
+	IsEnabled     *bool    `json:"is_enabled"`
+	MonthlyLimit  *float64 `json:"monthly_limit"`
+	UsedCredits   *float64 `json:"used_credits"`
+	Currency      string   `json:"currency"`
+	DecimalPlaces *int     `json:"decimal_places"`
+}
+
+// A currency exponent outside this range is not a currency, and 10^n of a garbage n would
+// turn a minor amount into a number nobody should act on.
+const maxCurrencyExponent = 6
+
+// parseCredits returns nil when credits are absent, disabled, or not readable as a complete
+// set of numbers. There is deliberately no partial result: a used amount without a limit, or
+// either without a currency, would have to be filled in with a zero, and a zero here reads as
+// "credits spent" when it means "could not tell".
+//
+// spend_limit_reached is ignored on purpose. It read false on a payload where used (21.50)
+// already exceeded limit (20.00), so it is not an exhaustion signal. The used and limit
+// amounts are.
+func parseCredits(body []byte) *credits {
+	var p struct {
+		Spend      *spendPayload      `json:"spend"`
+		ExtraUsage *extraUsagePayload `json:"extra_usage"`
+	}
+	// A field of the wrong type fails only that field, and the rest still decodes. Anything
+	// unusable ends up nil and is handled below.
+	_ = json.Unmarshal(body, &p)
+	if c, definite := creditsFromSpend(p.Spend); definite {
+		return c
+	}
+	return creditsFromExtraUsage(p.ExtraUsage)
+}
+
+// creditsFromSpend reports definite=false when spend cannot settle the question, so the
+// caller falls back to extra_usage. An explicit enabled=false is definite: spend is the newer
+// of the two shapes, and reviving credits it says are off from the older one would be wrong.
+func creditsFromSpend(s *spendPayload) (*credits, bool) {
+	if s == nil || s.Enabled == nil {
+		return nil, false
+	}
+	if !*s.Enabled {
+		return nil, true
+	}
+	if s.Used == nil || s.Limit == nil {
+		return nil, false
+	}
+	used, usedDec, ok := minorToMajor(s.Used.AmountMinor, s.Used.Exponent)
+	if !ok {
+		return nil, false
+	}
+	limit, limitDec, ok := minorToMajor(s.Limit.AmountMinor, s.Limit.Exponent)
+	if !ok {
+		return nil, false
+	}
+	currency := s.Used.Currency
+	if currency == "" {
+		currency = s.Limit.Currency
+	}
+	if s.Limit.Currency != "" && s.Limit.Currency != currency {
+		// A ratio of two different currencies is not a percentage of anything.
+		return nil, false
+	}
+	c, ok := newCredits(used, limit, max(usedDec, limitDec), currency, s.Severity)
+	return c, ok
+}
+
+func creditsFromExtraUsage(e *extraUsagePayload) *credits {
+	if e == nil || e.IsEnabled == nil || !*e.IsEnabled {
+		return nil
+	}
+	used, dec, ok := minorToMajor(e.UsedCredits, e.DecimalPlaces)
+	if !ok {
+		return nil
+	}
+	limit, _, ok := minorToMajor(e.MonthlyLimit, e.DecimalPlaces)
+	if !ok {
+		return nil
+	}
+	// extra_usage carries no severity, and deriving one here would be this tool's guess
+	// presented as the endpoint's verdict.
+	c, _ := newCredits(used, limit, dec, e.Currency, "")
+	return c
+}
+
+func minorToMajor(amount *float64, exponent *int) (float64, int, bool) {
+	if amount == nil || exponent == nil || *exponent < 0 || *exponent > maxCurrencyExponent {
+		return 0, 0, false
+	}
+	return *amount / math.Pow10(*exponent), *exponent, true
+}
+
+func newCredits(used, limit float64, decimals int, currency, severity string) (*credits, bool) {
+	// A zero limit could mean "no credits allowed" or "no cap", and nothing in the payload
+	// says which, so it gets no percentage at all rather than a guessed one.
+	if currency == "" || limit <= 0 || used < 0 {
+		return nil, false
+	}
+	left, _ := percentLeft(used/limit*100, true)
+	if severity == "" {
+		severity = "unknown"
+	}
+	return &credits{used: used, limit: limit, decimals: decimals, currency: currency, percentLeft: left, severity: severity}, true
 }
 
 // --- public ----------------------------------------------------------------------
@@ -385,6 +618,7 @@ func getUsage() reading {
 		credSource: creds.source,
 		plan:       creds.plan,
 		fetchedAt:  time.Now(),
+		credits:    parseCredits(r.body),
 	}
 	writeCache(live)
 	return live
