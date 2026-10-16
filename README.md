@@ -370,7 +370,7 @@ On an M-series Mac, `darwin/arm64`:
 go test -race ./...
 ```
 
-108 tests, 90% statement coverage, about 4 seconds. Tests assert behavioural contracts rather
+110 tests, 90% statement coverage, about 4 seconds. Tests assert behavioural contracts rather
 than implementation, so the names read as guarantees:
 `TestFailuresNeverRenderNumbers`, `TestCacheHoldsNoSecret`,
 `TestRateLimitOnTheMeterIsNotBudgetExhaustion`, `TestDoctorNeverPrintsTheToken`,
